@@ -28,6 +28,7 @@
 
 #pragma once
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -61,9 +62,11 @@ public:
 
     Status currentFilesCompatible(OperationContext* opCtx) const override;
 
-    void getCollectionNamespaces(std::list<std::string>* out) const override;
+    void getCollectionNamespaces(std::set<std::string>& out) const override;
+    void getCollectionNamespaces(std::vector<std::string>& out) const override;
 
-    CollectionCatalogEntry* getCollectionCatalogEntry(StringData ns) const override;
+    CollectionCatalogEntry* getCollectionCatalogEntry(OperationContext* opCtx,
+                                                      StringData ns) override;
 
     RecordStore* getRecordStore(StringData ns) const override;
 
@@ -75,6 +78,16 @@ public:
                             StringData ns,
                             const CollectionOptions& options,
                             bool allocateDefaultSpace) override;
+    Status createCollection(OperationContext* opCtx,
+                            const NamespaceString& nss,
+                            const CollectionOptions& options,
+                            const BSONObj& idIndexSpec) override;
+
+    /*
+     * For table which exists in Eloq, fetches the metadata and create KVCollectionCatalogEntry
+     */
+    CollectionCatalogEntry* createKVCollectionCatalogEntry(OperationContext* opCtx,
+                                                           StringData ns) override;
 
     Status renameCollection(OperationContext* opCtx,
                             StringData fromNS,
@@ -94,10 +107,11 @@ protected:
     class AddCollectionChange;
     class RemoveCollectionChange;
 
-    typedef std::map<std::string, KVCollectionCatalogEntry*> CollectionMap;
-
 
     KVStorageEngine* const _engine;  // not owned here
-    CollectionMap _collections;
+    using CollectionCatalogMap =
+        std::map<std::string, std::unique_ptr<KVCollectionCatalogEntry>, std::less<void>>;
+    CollectionCatalogMap _collections;
+    // mutable std::mutex _collectionsMutex;
 };
 }  // namespace mongo

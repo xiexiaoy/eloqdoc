@@ -29,6 +29,8 @@
 #pragma once
 
 #include <cstdint>
+#include <future>
+#include <memory>
 #include <stdlib.h>
 #include <string>
 
@@ -52,7 +54,17 @@ class RecoveryUnit {
     MONGO_DISALLOW_COPYING(RecoveryUnit);
 
 public:
+    static void DefaultDeleter(RecoveryUnit* ptr) {
+        delete ptr;
+    }
+
+    using UPtr = std::unique_ptr<RecoveryUnit, void (*)(RecoveryUnit*)>;
     virtual ~RecoveryUnit() {}
+    virtual void reset() {
+        MONGO_UNREACHABLE;
+    }
+
+    virtual void setOperationContext(OperationContext* opCtx) {}
 
     /**
      * These should be called through WriteUnitOfWork rather than directly.

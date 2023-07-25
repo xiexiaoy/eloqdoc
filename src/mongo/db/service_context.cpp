@@ -26,6 +26,7 @@
  *    it in the license file.
  */
 
+#include "mongo/base/object_pool.h"
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
@@ -236,8 +237,10 @@ void ServiceContext::ClientDeleter::operator()(Client* client) const {
 }
 
 ServiceContext::UniqueOperationContext ServiceContext::makeOperationContext(Client* client) {
-    auto opCtx = std::make_unique<OperationContext>(client, _nextOpId.fetchAndAdd(1));
-    onCreate(opCtx.get(), _clientObservers);
+    // auto opCtx = std::make_unique<OperationContext>(client, _nextOpId.fetchAndAdd(1));
+    auto opCtx =
+        ObjectPool<OperationContext>::newObjectRawPointer(client, _nextOpId.fetchAndAdd(1));
+    onCreate(opCtx, _clientObservers);
     if (!opCtx->lockState()) {
         opCtx->setLockState(std::make_unique<LockerNoop>());
     }
@@ -247,10 +250,39 @@ ServiceContext::UniqueOperationContext ServiceContext::makeOperationContext(Clie
     }
     {
         stdx::lock_guard<Client> lk(*client);
-        client->setOperationContext(opCtx.get());
+        client->setOperationContext(opCtx);
     }
-    return UniqueOperationContext(opCtx.release());
+    return UniqueOperationContext(opCtx);
 };
+
+void ServiceContext::initOperationContext(OperationContext* opCtx) {
+    MONGO_UNREACHABLE;
+    onCreate(opCtx, _clientObservers);
+    if (!opCtx->lockState()) {
+        opCtx->setLockState(std::make_unique<LockerNoop>());
+    }
+    if (!opCtx->recoveryUnit()) {
+        opCtx->setRecoveryUnit(new RecoveryUnitNoop(),
+                               WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
+    }
+
+    {
+        Client* client = opCtx->getClient();
+        stdx::lock_guard<Client> lk(*client);
+        client->setOperationContext(opCtx);
+    }
+}
+
+void ServiceContext::destoryOperationContext(OperationContext* opCtx) {
+    MONGO_UNREACHABLE;
+    auto client = opCtx->getClient();
+    auto service = client->getServiceContext();
+    {
+        stdx::lock_guard<Client> lk(*client);
+        client->resetOperationContext();
+    }
+    onDestroy(opCtx, service->_clientObservers);
+}
 
 void ServiceContext::OperationContextDeleter::operator()(OperationContext* opCtx) const {
     auto client = opCtx->getClient();
@@ -260,7 +292,8 @@ void ServiceContext::OperationContextDeleter::operator()(OperationContext* opCtx
         client->resetOperationContext();
     }
     onDestroy(opCtx, service->_clientObservers);
-    delete opCtx;
+    // delete opCtx;
+    ObjectPool<OperationContext>::recycleObject(opCtx);
 }
 
 void ServiceContext::registerClientObserver(std::unique_ptr<ClientObserver> observer) {
@@ -379,19 +412,19 @@ ServiceContext::ConstructorActionRegisterer::ConstructorActionRegisterer(
     DestructorAction destructor) {
     if (!destructor)
         destructor = [](ServiceContext*) {};
-    _registerer.emplace(std::move(name),
-                        std::move(prereqs),
-                        [this, constructor, destructor](InitializerContext* context) {
-                            _iter = registeredConstructorActions().emplace(
-                                registeredConstructorActions().end(),
-                                std::move(constructor),
-                                std::move(destructor));
-                            return Status::OK();
-                        },
-                        [this](DeinitializerContext* context) {
-                            registeredConstructorActions().erase(_iter);
-                            return Status::OK();
-                        });
+    _registerer.emplace(
+        std::move(name),
+        std::move(prereqs),
+        [this, constructor, destructor](InitializerContext* context) {
+            _iter = registeredConstructorActions().emplace(registeredConstructorActions().end(),
+                                                           std::move(constructor),
+                                                           std::move(destructor));
+            return Status::OK();
+        },
+        [this](DeinitializerContext* context) {
+            registeredConstructorActions().erase(_iter);
+            return Status::OK();
+        });
 }
 
 ServiceContext::UniqueServiceContext ServiceContext::make() {

@@ -26,16 +26,16 @@
  *    it in the license file.
  */
 
+
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/storage/storage_engine_init.h"
 
-#include <map>
-
 #include "mongo/base/init.h"
 #include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/db/concurrency/eloq_locker_noop.h"
 #include "mongo/db/concurrency/lock_state.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/storage/storage_engine_lock_file.h"
@@ -105,14 +105,12 @@ void initializeStorageEngine(ServiceContext* service, const StorageEngineInitFla
                 getFactoryForStorageEngine(service, storageGlobalParams.engine);
             if (factory) {
                 uassert(28662,
-                        str::stream() << "Cannot start server. Detected data files in " << dbpath
-                                      << " created by"
-                                      << " the '"
-                                      << *existingStorageEngine
-                                      << "' storage engine, but the"
-                                      << " specified storage engine was '"
-                                      << factory->getCanonicalName()
-                                      << "'.",
+                        str::stream()
+                            << "Cannot start server. Detected data files in " << dbpath
+                            << " created by"
+                            << " the '" << *existingStorageEngine << "' storage engine, but the"
+                            << " specified storage engine was '" << factory->getCanonicalName()
+                            << "'.",
                         factory->getCanonicalName() == *existingStorageEngine);
             }
         } else {
@@ -161,8 +159,7 @@ void initializeStorageEngine(ServiceContext* service, const StorageEngineInitFla
         uassert(34368,
                 str::stream()
                     << "Server was started in read-only mode, but the configured storage engine, "
-                    << storageGlobalParams.engine
-                    << ", does not support read-only operation",
+                    << storageGlobalParams.engine << ", does not support read-only operation",
                 factory->supportsReadOnly());
     }
 
@@ -228,9 +225,7 @@ void createLockFile(ServiceContext* service) {
     } catch (const std::exception& ex) {
         uassert(28596,
                 str::stream() << "Unable to determine status of lock file in the data directory "
-                              << storageGlobalParams.dbpath
-                              << ": "
-                              << ex.what(),
+                              << storageGlobalParams.dbpath << ": " << ex.what(),
                 false);
     }
     const bool wasUnclean = lockFile->createdByUncleanShutdown();
@@ -339,7 +334,7 @@ class StorageClientObserver final : public ServiceContext::ClientObserver {
 public:
     void onCreateClient(Client* client) override{};
     void onDestroyClient(Client* client) override{};
-    void onCreateOperationContext(OperationContext* opCtx) {
+    void onCreateOperationContext(OperationContext* opCtx) override {
         auto service = opCtx->getServiceContext();
         auto storageEngine = service->getStorageEngine();
         // NOTE(schwerin): The following uassert would be more desirable than the early return when
@@ -352,15 +347,28 @@ public:
         if (!storageEngine) {
             return;
         }
-        if (storageEngine->isMmapV1()) {
+        if (storageEngine->getUseNoopLockImpl()) {
+            if (opCtx->lockState()) {
+                opCtx->resetLockState();
+            } else {
+                opCtx->setLockState(stdx::make_unique<EloqLockerNoop>());
+            }
+        } else if (storageEngine->isMmapV1()) {
+            MONGO_UNREACHABLE;
             opCtx->setLockState(stdx::make_unique<MMAPV1LockerImpl>());
         } else {
+            MONGO_UNREACHABLE;
             opCtx->setLockState(stdx::make_unique<DefaultLockerImpl>());
         }
-        opCtx->setRecoveryUnit(storageEngine->newRecoveryUnit(),
-                               WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
+
+        if (opCtx->recoveryUnit()) {
+            opCtx->resetRecoveryUnit(WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
+        } else {
+            opCtx->setRecoveryUnit(storageEngine->newRecoveryUnit(),
+                                   WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
+        }
     }
-    void onDestroyOperationContext(OperationContext* opCtx) {}
+    void onDestroyOperationContext(OperationContext* opCtx) override {}
 };
 
 ServiceContext::ConstructorActionRegisterer registerStorageClientObserverConstructor{

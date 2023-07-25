@@ -29,7 +29,12 @@
 #pragma once
 
 #include <atomic>
+#include <boost/context/continuation.hpp>
+#include <boost/context/continuation_fcontext.hpp>
+#include <boost/context/stack_context.hpp>
+#include <functional>
 
+#include "boost/optional/optional.hpp"
 #include "mongo/base/status.h"
 #include "mongo/config.h"
 #include "mongo/db/service_context.h"
@@ -68,12 +73,18 @@ public:
      */
     static std::shared_ptr<ServiceStateMachine> create(ServiceContext* svcContext,
                                                        transport::SessionHandle session,
-                                                       transport::Mode transportMode);
+                                                       transport::Mode transportMode,
+                                                       uint16_t groupId = 0);
 
     ServiceStateMachine(ServiceContext* svcContext,
                         transport::SessionHandle session,
-                        transport::Mode transportMode);
+                        transport::Mode transportMode,
+                        uint16_t groupId = 0);
 
+    void reset(ServiceContext* svcContext,
+               transport::SessionHandle session,
+               transport::Mode transportMode,
+               uint16_t groupId = 0);
     /*
      * Any state may transition to EndSession in case of an error, otherwise the valid state
      * transitions are:
@@ -151,6 +162,10 @@ public:
      */
     void setCleanupHook(stdx::function<void()> hook);
 
+    void setServiceExecutor(transport::ServiceExecutor* serviceExecutor);
+
+    void setThreadGroupId(size_t id);
+
 private:
     /*
      * A class that wraps up lifetime management of the _dbClient and _threadName for runNext();
@@ -189,6 +204,8 @@ private:
      */
     void _runNextInGuard(ThreadGuard guard);
 
+    void _runResumeProcess();
+
     /*
      * This function actually calls into the database and processes a request. It's broken out
      * into its own inline function for better readability.
@@ -218,7 +235,10 @@ private:
     ServiceEntryPoint* _sep;
     transport::Mode _transportMode;
 
-    ServiceContext* const _serviceContext;
+    // responsible for scheduling network tasks
+    ServiceContext* _serviceContext;
+    // responsible for scheduling DBRequest tasks
+    transport::ServiceExecutor* _serviceExecutor;
 
     transport::SessionHandle _sessionHandle;
     const std::string _threadName;
@@ -235,6 +255,39 @@ private:
     AtomicWord<stdx::thread::id> _owningThread;
 #endif
     std::string _oldThreadName;
+
+    // Coroutine design
+    class NoopAllocator {
+    public:
+        NoopAllocator() = default;
+
+        boost::context::stack_context allocate() {
+            boost::context::stack_context sc;
+            return sc;
+        }
+
+        void deallocate(boost::context::stack_context& sc) {
+            // no-op
+        }
+    };
+
+    static constexpr size_t kCoroStackSize = 320 * 1024;
+    boost::context::stack_context coroStackContext() {
+        boost::context::stack_context sc;
+        sc.size = kCoroStackSize;
+        // Because stack grows downwards from high address?
+        sc.sp = _coroStack + kCoroStackSize;
+        return sc;
+    }
+
+    boost::context::continuation _source;
+    char _coroStack[kCoroStackSize];
+
+    enum class CoroStatus { Empty = 0, OnGoing, Finished };
+    CoroStatus _coroStatus{CoroStatus::Empty};
+    std::function<void()> _coroYield;
+    std::function<void()> _coroResume;
+    uint16_t _threadGroupId{0};
 };
 
 template <typename T>

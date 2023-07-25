@@ -1,5 +1,4 @@
 /build
-/src/mongo/db/modules
 /.jsdbshell
 /.dbshell
 /*.ninja
@@ -143,13 +142,13 @@ debian/mongodb
 
 # Idea CLion project artifacts
 .idea
-CMakeLists.txt
+# CMakeLists.txt
 
 # XCode projects
 .xcworkspace
 
 # VSCode projects
-.vscode/
+.vscode
 
 # Windows MSI builder artifacts
 *.msi
@@ -165,3 +164,17 @@ src/mongo/embedded/java/jar/build/
 local.properties
 
 compile_commands.json
+
+.cache/
+.root
+build/*
+src/mongo/installer/compass/install_compass
+out.perf
+perf.txt
+rpc_data/
+core.*
+testcase_log.txt
+
+src/mongo/db/modules/eloq/*build*
+src/mongo/db/modules/eloq/*test*/
+config/*/*.conf

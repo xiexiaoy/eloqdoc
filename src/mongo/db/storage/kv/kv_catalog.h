@@ -30,9 +30,11 @@
 
 #pragma once
 
+#include "mongo/db/namespace_string.h"
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "mongo/base/string_data.h"
 #include "mongo/db/catalog/collection_options.h"
@@ -66,10 +68,16 @@ public:
     /**
      * @return error or ident for instance
      */
+    // Status newCollection(OperationContext* opCtx,
+    //                      StringData ns,
+    //                      const CollectionOptions& options,
+    //                      KVPrefix prefix);
     Status newCollection(OperationContext* opCtx,
-                         StringData ns,
+                         const NamespaceString& nss,
                          const CollectionOptions& options,
-                         KVPrefix prefix);
+                         const BSONObj& idIndexSpec);
+
+    // void addIdent(OperationContext* opCtx, StringData ns, StringData ident, RecordId recordId);
 
     std::string getCollectionIdent(StringData ns) const;
 
@@ -89,6 +97,8 @@ public:
 
     std::vector<std::string> getAllIdentsForDB(StringData db) const;
     std::vector<std::string> getAllIdents(OperationContext* opCtx) const;
+
+    bool isSystemDataIdent(StringData ident) const;
 
     bool isUserDataIdent(StringData ident) const;
 
@@ -111,7 +121,16 @@ public:
      */
     StatusWith<std::string> newOrphanedIdent(OperationContext* opCtx, std::string ident);
 
+    BSONObj findEntry(OperationContext* opCtx, StringData ns) const {
+        return _findEntry(opCtx, ns);
+    }
+
 private:
+    BSONObj _buildMetadata(OperationContext* opCtx,
+                           const NamespaceString& nss,
+                           const CollectionOptions& options,
+                           const BSONObj& idIndexSpec);
+
     class AddIdentChange;
     class RemoveIdentChange;
 
@@ -122,32 +141,33 @@ private:
      * @param ns - the containing ns
      * @param kind - what this "thing" is, likely collection or index
      */
-    std::string _newUniqueIdent(StringData ns, const char* kind);
+    // std::string _newUniqueIdent(StringData ns, const char* kind);
 
     // Helpers only used by constructor and init(). Don't call from elsewhere.
-    static std::string _newRand();
-    bool _hasEntryCollidingWithRand() const;
+    // static std::string _newRand();
+    // bool _hasEntryCollidingWithRand() const;
 
     RecordStore* _rs;  // not owned
     const bool _directoryPerDb;
     const bool _directoryForIndexes;
 
-    // These two are only used for ident generation inside _newUniqueIdent.
-    std::string _rand;  // effectively const after init() returns
-    AtomicUInt64 _next;
 
-    struct Entry {
-        Entry() {}
-        Entry(std::string i, RecordId l) : ident(i), storedLoc(l) {}
-        std::string ident;
-        RecordId storedLoc;
-    };
-    typedef std::map<std::string, Entry> NSToIdentMap;
-    NSToIdentMap _idents;
-    mutable stdx::mutex _identsLock;
+    // These two are only used for ident generation inside _newUniqueIdent.
+    // std::string _rand;  // effectively const after init() returns
+    // AtomicUInt64 _next;
+
+    // struct Entry {
+    //     Entry() = default;
+    //     Entry(std::string i, RecordId l) : ident(std::move(i)), storedLoc(std::move(l)) {}
+    //     std::string ident;
+    //     RecordId storedLoc;
+    // };
+    // using NSToIdentMap = std::map<std::string, Entry>;
+    // NSToIdentMap _idents;
+    // mutable stdx::mutex _identsLock;
 
     // Manages the feature document that may be present in the KVCatalog. '_featureTracker' is
     // guaranteed to be non-null after KVCatalog::init() is called.
     std::unique_ptr<FeatureTracker> _featureTracker;
 };
-}
+}  // namespace mongo

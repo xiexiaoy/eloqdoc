@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include "mongo/db/storage/recovery_unit.h"
+#include "mongo/util/assert_util.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -46,16 +48,39 @@ namespace mongo {
 class IndexDescriptor;
 class JournalListener;
 class OperationContext;
-class RecoveryUnit;
+// class RecoveryUnit;
 class SortedDataInterface;
 class SnapshotManager;
 
 class KVEngine {
 public:
     virtual RecoveryUnit* newRecoveryUnit() = 0;
-
+    virtual RecoveryUnit::UPtr newRecoveryUnitUPtr() {
+        MONGO_UNREACHABLE;
+    }
+    virtual std::pair<bool, Status> lockCollection(OperationContext* opCtx,
+                                                   StringData ns,
+                                                   bool isForWrite) {
+        MONGO_UNREACHABLE;
+    }
     // ---------
 
+    virtual void listDatabases(std::vector<std::string>& out) const {
+        MONGO_UNREACHABLE;
+    }
+
+    virtual bool databaseExists(std::string_view dbName) const {
+        MONGO_UNREACHABLE;
+        return false;
+    }
+
+    virtual void listCollections(std::string_view dbName, std::vector<std::string>& out) const {
+        MONGO_UNREACHABLE;
+    }
+
+    virtual void listCollections(std::string_view dbName, std::set<std::string>& out) const {
+        MONGO_UNREACHABLE;
+    }
     /**
      * Having multiple out for the same ns is a rules violation; Calling on a non-created ident is
      * invalid and may crash.
@@ -361,4 +386,4 @@ public:
      */
     virtual ~KVEngine() {}
 };
-}
+}  // namespace mongo

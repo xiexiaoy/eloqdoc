@@ -30,12 +30,15 @@
 
 #pragma once
 
+
+#include "mongo/util/assert_util.h"
 #include <string>
 #include <vector>
 
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/timestamp.h"
+#include "mongo/db/storage/recovery_unit.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -43,7 +46,7 @@ namespace mongo {
 class DatabaseCatalogEntry;
 class JournalListener;
 class OperationContext;
-class RecoveryUnit;
+// class RecoveryUnit;
 class SnapshotManager;
 struct StorageGlobalParams;
 class StorageEngineLockFile;
@@ -139,8 +142,8 @@ public:
     };
 
     /**
-    * The destructor should only be called if we are tearing down but not exiting the process.
-    */
+     * The destructor should only be called if we are tearing down but not exiting the process.
+     */
     virtual ~StorageEngine() {}
 
     /**
@@ -157,6 +160,15 @@ public:
      * Caller owns the returned pointer.
      */
     virtual RecoveryUnit* newRecoveryUnit() = 0;
+    virtual RecoveryUnit::UPtr newRecoveryUnitUPtr() {
+        MONGO_UNREACHABLE;
+    }
+
+    virtual std::pair<bool, Status> lockCollection(OperationContext* opCtx,
+                                                   StringData ns,
+                                                   bool isForWrite) {
+        MONGO_UNREACHABLE;
+    }
 
     /**
      * List the databases stored in this storage engine.
@@ -164,7 +176,16 @@ public:
      * XXX: why doesn't this take OpCtx?
      */
     virtual void listDatabases(std::vector<std::string>* out) const = 0;
-
+    virtual bool databaseExists(std::string_view dbName) const {
+        MONGO_UNREACHABLE;
+        return false;
+    }
+    virtual void listCollections(std::string_view dbName, std::vector<std::string>* out) const {
+        MONGO_UNREACHABLE;
+    }
+    virtual void listCollections(std::string_view dbName, std::set<std::string>& out) const {
+        MONGO_UNREACHABLE;
+    }
     /**
      * Return the DatabaseCatalogEntry that describes the database indicated by 'db'.
      *
@@ -422,6 +443,18 @@ public:
      * implementation.
      */
     virtual Timestamp getAllCommittedTimestamp() const = 0;
+
+    void setUseNoopLockImpl(bool v) {
+        useNoopLockImpl = v;
+    }
+
+    bool getUseNoopLockImpl() {
+        return useNoopLockImpl;
+    }
+
+private:
+    // set true in eloq
+    bool useNoopLockImpl{false};
 };
 
 }  // namespace mongo

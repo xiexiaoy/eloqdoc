@@ -26,18 +26,19 @@
  *    it in the license file.
  */
 
+
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
 
-#include "mongo/platform/basic.h"
-
 #include "mongo/transport/service_state_machine.h"
-
+#include "mongo/base/object_pool.h"
+#include "mongo/base/status.h"
 #include "mongo/config.h"
 #include "mongo/db/client.h"
 #include "mongo/db/dbmessage.h"
+#include "mongo/db/operation_context.h"
+#include "mongo/db/server_options.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/rpc/message.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/transport/message_compressor_manager.h"
 #include "mongo/transport/service_entry_point.h"
 #include "mongo/transport/service_executor_task_names.h"
@@ -117,11 +118,11 @@ public:
 #endif
 
         // Set up the thread name
-        auto oldThreadName = getThreadName();
-        if (oldThreadName != _ssm->_threadName) {
-            _ssm->_oldThreadName = getThreadName().toString();
-            setThreadName(_ssm->_threadName);
-        }
+        // auto oldThreadName = getThreadName();
+        // if (oldThreadName != _ssm->_threadName) {
+        //     _ssm->_oldThreadName = getThreadName().toString();
+        //     setThreadName(_ssm->_threadName);
+        // }
 
         // Swap the current Client so calls to cc() work as expected
         Client::setCurrent(std::move(_ssm->_dbClient));
@@ -182,9 +183,9 @@ public:
                 _ssm->_dbClient = Client::releaseCurrent();
             }
 
-            if (!_ssm->_oldThreadName.empty()) {
-                setThreadName(_ssm->_oldThreadName);
-            }
+            // if (!_ssm->_oldThreadName.empty()) {
+            //     setThreadName(_ssm->_oldThreadName);
+            // }
         }
 
         // If the session has ended, then it's unsafe to do anything but call the cleanup hook.
@@ -213,29 +214,71 @@ private:
     bool _haveTakenOwnership = false;
 };
 
+// static moodycamel::ConcurrentQueue<std::unique_ptr<ServiceStateMachine>> ssmPool{};
+
 std::shared_ptr<ServiceStateMachine> ServiceStateMachine::create(ServiceContext* svcContext,
                                                                  transport::SessionHandle session,
-                                                                 transport::Mode transportMode) {
-    return std::make_shared<ServiceStateMachine>(svcContext, std::move(session), transportMode);
+                                                                 transport::Mode transportMode,
+                                                                 uint16_t groupId) {
+    // return std::make_shared<ServiceStateMachine>(svcContext, std::move(session), transportMode,
+    // 0);
+    return ObjectPool<ServiceStateMachine>::newObjectSharedPointer(
+        svcContext, std::move(session), transportMode, groupId);
+    // ServiceStateMachine* ssm{nullptr};
+    // std::unique_ptr<ServiceStateMachine> ssmUptr{nullptr};
+    // bool success = ssmPool.try_dequeue(ssmUptr);
+    // if (success) {
+    //     ssm = ssmUptr.release();
+    //     ssm->Reset(svcContext, std::move(session), transportMode);
+    // } else {
+    //     ssm = new ServiceStateMachine(svcContext, std::move(session), transportMode, group_id);
+    // }
+    // return std::shared_ptr<ServiceStateMachine>(ssm, [](ServiceStateMachine* ptr) {
+    //     ssmPool.enqueue(std::unique_ptr<ServiceStateMachine>(ptr));
+    // });
 }
 
 ServiceStateMachine::ServiceStateMachine(ServiceContext* svcContext,
                                          transport::SessionHandle session,
-                                         transport::Mode transportMode)
+                                         transport::Mode transportMode,
+                                         uint16_t groupId)
     : _state{State::Created},
       _sep{svcContext->getServiceEntryPoint()},
       _transportMode(transportMode),
       _serviceContext(svcContext),
+      _serviceExecutor(_serviceContext->getServiceExecutor()),
       _sessionHandle(session),
       _threadName{str::stream() << "conn" << _session()->id()},
       _dbClient{svcContext->makeClient(_threadName, std::move(session))},
-      _dbClientPtr{_dbClient.get()} {}
+      _dbClientPtr{_dbClient.get()},
+      _threadGroupId(groupId) {
+    MONGO_LOG(1) << "ServiceStateMachine::ServiceStateMachine";
+}
+
+void ServiceStateMachine::reset(ServiceContext* svcContext,
+                                transport::SessionHandle session,
+                                transport::Mode transportMode,
+                                uint16_t groupId) {
+    MONGO_LOG(1) << "ServiceStateMachine::Reset";
+    _state.store(State::Created);
+    _sep = svcContext->getServiceEntryPoint();
+    _transportMode = transportMode;
+    _serviceContext = svcContext;
+    _serviceExecutor = _serviceContext->getServiceExecutor();
+    _sessionHandle = session;
+    // _threadName = str::stream() << "conn" << _session()->id();
+    _dbClient = svcContext->makeClient(_threadName, std::move(session));
+    _dbClientPtr = _dbClient.get();
+    _threadGroupId = groupId;
+    _owned.store(Ownership::kUnowned);
+}
 
 const transport::SessionHandle& ServiceStateMachine::_session() const {
     return _sessionHandle;
 }
 
 void ServiceStateMachine::_sourceMessage(ThreadGuard guard) {
+    MONGO_LOG(1) << "ServiceStateMachine::_sourceMessage";
     invariant(_inMessage.empty());
     invariant(_state.load() == State::Source);
     _state.store(State::SourceWait);
@@ -261,6 +304,7 @@ void ServiceStateMachine::_sourceMessage(ThreadGuard guard) {
 }
 
 void ServiceStateMachine::_sinkMessage(ThreadGuard guard, Message toSink) {
+    MONGO_LOG(1) << "ServiceStateMachine::_sinkMessage";
     // Sink our response to the client
     invariant(_state.load() == State::Process);
     _state.store(State::SinkWait);
@@ -282,6 +326,7 @@ void ServiceStateMachine::_sinkMessage(ThreadGuard guard, Message toSink) {
 }
 
 void ServiceStateMachine::_sourceCallback(Status status) {
+    MONGO_LOG(1) << "ServiceStateMachine::_sourceCallback";
     // The first thing to do is create a ThreadGuard which will take ownership of the SSM in this
     // thread.
     ThreadGuard guard(this);
@@ -323,6 +368,7 @@ void ServiceStateMachine::_sourceCallback(Status status) {
 }
 
 void ServiceStateMachine::_sinkCallback(Status status) {
+    MONGO_LOG(1) << "ServiceStateMachine::_sinkCallback";
     // The first thing to do is create a ThreadGuard which will take ownership of the SSM in this
     // thread.
     ThreadGuard guard(this);
@@ -355,8 +401,8 @@ void ServiceStateMachine::_sinkCallback(Status status) {
 }
 
 void ServiceStateMachine::_processMessage(ThreadGuard guard) {
+    MONGO_LOG(1) << "ServiceStateMachine::_processMessage";
     invariant(!_inMessage.empty());
-
     auto& compressorMgr = MessageCompressorManager::forSession(_session());
 
     _compressorId = boost::none;
@@ -370,16 +416,35 @@ void ServiceStateMachine::_processMessage(ThreadGuard guard) {
 
     networkCounter.hitLogicalIn(_inMessage.size());
 
+
     // Pass sourced Message to handler to generate response.
-    auto opCtx = Client::getCurrent()->makeOperationContext();
 
-    // The handleRequest is implemented in a subclass for mongod/mongos and actually all the
-    // database work for this request.
-    DbResponse dbresponse = _sep->handleRequest(opCtx.get(), _inMessage);
 
-    // opCtx must be destroyed here so that the operation cannot show
-    // up in currentOp results after the response reaches the client
-    opCtx.reset();
+    DbResponse dbresponse;
+    {
+        // OperationContext opCtx(Client::getCurrent(), _serviceContext->nextOpId());
+        // _serviceContext->initOperationContext(&opCtx);
+        auto opCtx = Client::getCurrent()->makeOperationContext();
+
+        // MONGO_LOG(0) << "Operation Context decorations memeory usage: " << opCtx->sizeBytes();
+        
+        if (serverGlobalParams.enableCoroutine) {
+            opCtx->setCoroutineFunctors(&_coroYield, &_coroResume);
+        }
+
+        // The handleRequest is implemented in a subclass for mongod/mongos and actually all the
+        // database work for this request.
+        dbresponse = _sep->handleRequest(opCtx.get(), _inMessage);
+
+
+        _coroStatus = CoroStatus::Empty;
+        _serviceExecutor->ongoingCoroutineCountUpdate(_threadGroupId, -1);
+
+        // opCtx must be destroyed here so that the operation cannot show
+        // up in currentOp results after the response reaches the client
+        // opCtx.reset();
+        // _serviceContext->destoryOperationContext(&opCtx);
+    }
 
     // Format our response, if we have one
     Message& toSink = dbresponse.response;
@@ -415,10 +480,12 @@ void ServiceStateMachine::_processMessage(ThreadGuard guard) {
 }
 
 void ServiceStateMachine::runNext() {
+    MONGO_LOG(1) << "ServiceStateMachine::runNext";
     return _runNextInGuard(ThreadGuard(this));
 }
 
 void ServiceStateMachine::_runNextInGuard(ThreadGuard guard) {
+    MONGO_LOG(1) << "ServiceStateMachine::_runNextInGuard";
     auto curState = state();
     dassert(curState != State::Ended);
 
@@ -435,9 +502,55 @@ void ServiceStateMachine::_runNextInGuard(ThreadGuard guard) {
             case State::Source:
                 _sourceMessage(std::move(guard));
                 break;
-            case State::Process:
-                _processMessage(std::move(guard));
-                break;
+            case State::Process: {
+                if (!serverGlobalParams.enableCoroutine) {
+                    _processMessage(std::move(guard));
+                } else {
+                    if (_coroStatus == CoroStatus::Empty) {
+                        MONGO_LOG(1) << "coroutine begin";
+                        _coroStatus = CoroStatus::OnGoing;
+                        _serviceExecutor->ongoingCoroutineCountUpdate(_threadGroupId, 1);
+                        auto func = [this, ssm = shared_from_this()] {
+                            Client::setCurrent(std::move(ssm->_dbClient));
+                            _runResumeProcess();
+                        };
+
+                        _coroResume =
+                            _serviceExecutor->coroutineResumeFunctor(_threadGroupId, func);
+
+                        boost::context::stack_context sc = coroStackContext();
+                        boost::context::preallocated prealloc(sc.sp, sc.size, sc);
+                        _source = boost::context::callcc(
+                            std::allocator_arg,
+                            prealloc,
+                            NoopAllocator(),
+                            [this, &guard](boost::context::continuation&& sink) {
+                                _coroYield = [this, &sink]() {
+                                    MONGO_LOG(1) << "call yield";
+                                    _dbClient = Client::releaseCurrent();
+                                    sink = sink.resume();
+                                };
+                                _processMessage(std::move(guard));
+                                return std::move(sink);
+                            });
+
+                        // _source =
+                        //     boost::context::callcc([this, &guard](boost::context::continuation&&
+                        //     sink) {
+                        //         _coroYield = [this, &sink]() {
+                        //             MONGO_LOG(1) << "call yield";
+                        //             _dbClient = Client::releaseCurrent();
+                        //             sink = sink.resume();
+                        //         };
+                        //         _processMessage(std::move(guard));
+                        //         return std::move(sink);
+                        //     });
+                    } else if (_coroStatus == CoroStatus::OnGoing) {
+                        MONGO_LOG(1) << "coroutine ongoing";
+                        _source = _source.resume();
+                    }
+                }
+            } break;
             case State::EndSession:
                 _cleanupSession(std::move(guard));
                 break;
@@ -461,7 +574,16 @@ void ServiceStateMachine::_runNextInGuard(ThreadGuard guard) {
     _cleanupSession(std::move(guard));
 }
 
+void ServiceStateMachine::_runResumeProcess() {
+    MONGO_LOG(1) << "ServiceStateMachine::_resumeRun";
+    if (_coroStatus == CoroStatus::OnGoing) {
+        MONGO_LOG(1) << "coroutine ongoing";
+        _source = _source.resume();
+    }
+}
+
 void ServiceStateMachine::start(Ownership ownershipModel) {
+    MONGO_LOG(1) << "ServiceStateMachine::start";
     _scheduleNextWithGuard(ThreadGuard(this),
                            transport::ServiceExecutor::kEmptyFlags,
                            transport::ServiceExecutorTaskName::kSSMStartSession,
@@ -472,15 +594,26 @@ void ServiceStateMachine::_scheduleNextWithGuard(ThreadGuard guard,
                                                  transport::ServiceExecutor::ScheduleFlags flags,
                                                  transport::ServiceExecutorTaskName taskName,
                                                  Ownership ownershipModel) {
-    auto func = [ ssm = shared_from_this(), ownershipModel ] {
+    MONGO_LOG(1) << "ServiceStateMachine::_scheduleNextWithGuard";
+    auto func = [ssm = shared_from_this(), ownershipModel] {
         ThreadGuard guard(ssm.get());
         if (ownershipModel == Ownership::kStatic)
             guard.markStaticOwnership();
         ssm->_runNextInGuard(std::move(guard));
     };
+
     guard.release();
-    Status status =
-        _serviceContext->getServiceExecutor()->schedule(std::move(func), flags, taskName);
+    // Status status = Status::OK();
+    Status status = _serviceExecutor->schedule(std::move(func), flags, taskName, _threadGroupId);
+    // if (taskName == transport::ServiceExecutorTaskName::kSSMProcessMessage) {
+    //     // coroutine mode in actually
+    //     status = _serviceExecutor->schedule(std::move(func), flags, taskName, _threadGroupId);
+    // } else {
+    //     // use adaptive mode to handle network task
+    //     status = _serviceContext->getServiceExecutor()->schedule(std::move(func), flags,
+    //     taskName);
+    // }
+
     if (status.isOK()) {
         return;
     }
@@ -495,6 +628,7 @@ void ServiceStateMachine::_scheduleNextWithGuard(ThreadGuard guard,
 }
 
 void ServiceStateMachine::terminate() {
+    MONGO_LOG(1) << "ServiceStateMachine::terminate";
     if (state() == State::Ended)
         return;
 
@@ -502,6 +636,7 @@ void ServiceStateMachine::terminate() {
 }
 
 void ServiceStateMachine::terminateIfTagsDontMatch(transport::Session::TagMask tags) {
+    MONGO_LOG(1) << "ServiceStateMachine::terminateIfTagsDontMatch";
     if (state() == State::Ended)
         return;
 
@@ -518,8 +653,19 @@ void ServiceStateMachine::terminateIfTagsDontMatch(transport::Session::TagMask t
 }
 
 void ServiceStateMachine::setCleanupHook(stdx::function<void()> hook) {
+    MONGO_LOG(1) << "ServiceStateMachine::setCleanupHook";
     invariant(state() == State::Created);
     _cleanupHook = std::move(hook);
+}
+
+void ServiceStateMachine::setServiceExecutor(transport::ServiceExecutor* serviceExecutor) {
+    MONGO_LOG(1) << "ServiceStateMachine::setServiceExecutor";
+    _serviceExecutor = serviceExecutor;
+}
+
+void ServiceStateMachine::setThreadGroupId(size_t id) {
+    MONGO_LOG(1) << "ServiceStateMachine::setThreadGroupId. id: " << id;
+    _threadGroupId = id;
 }
 
 ServiceStateMachine::State ServiceStateMachine::state() {
@@ -534,6 +680,7 @@ void ServiceStateMachine::_terminateAndLogIfError(Status status) {
 }
 
 void ServiceStateMachine::_cleanupSession(ThreadGuard guard) {
+    MONGO_LOG(1) << "ServiceStateMachine::_cleanupSession";
     _state.store(State::Ended);
 
     _inMessage.reset();

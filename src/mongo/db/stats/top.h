@@ -29,12 +29,15 @@
 
 #pragma once
 
+#include <mutex>
+#include <vector>
+
+#include "mongo/db/server_options.h"
 #include <boost/date_time/posix_time/posix_time.hpp>
 
 #include "mongo/db/commands.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/stats/operation_latency_histogram.h"
-#include "mongo/util/concurrency/mutex.h"
 #include "mongo/util/string_map.h"
 
 namespace mongo {
@@ -53,13 +56,18 @@ public:
     struct UsageData {
         UsageData() : time(0), count(0) {}
         UsageData(const UsageData& older, const UsageData& newer);
-        long long time;
-        long long count;
-
         void inc(long long micros) {
             count++;
             time += micros;
         }
+
+        void operator+=(const UsageData& other) {
+            time += other.time;
+            count += other.count;
+        }
+
+        long long time;
+        long long count;
     };
 
     struct CollectionData {
@@ -68,6 +76,19 @@ public:
          */
         CollectionData() {}
         CollectionData(const CollectionData& older, const CollectionData& newer);
+
+        void operator+=(const CollectionData& other) {
+            total += other.total;
+            readLock += other.readLock;
+            writeLock += other.writeLock;
+            queries += other.queries;
+            getmore += other.getmore;
+            insert += other.insert;
+            update += other.update;
+            remove += other.remove;
+            commands += other.commands;
+            opLatencyHistogram += other.opLatencyHistogram;
+        }
 
         UsageData total;
 
@@ -89,7 +110,9 @@ public:
         NotLocked,
     };
 
-    typedef StringMap<CollectionData> UsageMap;
+    // typedef StringMap<CollectionData> UsageMap;
+    using UsageMap = StringMap<CollectionData>;
+
 
 public:
     void record(OperationContext* opCtx,
@@ -137,17 +160,24 @@ private:
                  CollectionData& c,
                  LogicalOp logicalOp,
                  LockType lockType,
-                 long long micros,
+                 uint64_t micros,
                  Command::ReadWriteType readWriteType);
 
     void _incrementHistogram(OperationContext* opCtx,
-                             long long latency,
+                             uint64_t latency,
                              OperationLatencyHistogram* histogram,
                              Command::ReadWriteType readWriteType);
 
-    mutable SimpleMutex _lock;
-    OperationLatencyHistogram _globalHistogramStats;
-    UsageMap _usage;
+    UsageMap _mergeUsageVector();
+
+    std::vector<std::mutex> _histogramMutexVector{serverGlobalParams.reservedThreadNum + 1};
+    std::vector<OperationLatencyHistogram> _histogramVector{serverGlobalParams.reservedThreadNum +
+                                                            1};
+
+    std::vector<std::mutex> _usageMutexVector{serverGlobalParams.reservedThreadNum + 1};
+    std::vector<UsageMap> _usageVector{serverGlobalParams.reservedThreadNum + 1};
+
+    std::mutex _lastDroppedMutex;
     std::string _lastDropped;
 };
 

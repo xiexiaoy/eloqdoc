@@ -26,10 +26,13 @@
  *    then also delete it in the license file.
  */
 
+#include <utility>
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/query/query_request.h"
 
+#include "mongo/base/object_pool.h"
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
@@ -110,8 +113,66 @@ const char kNaturalSortField[] = "$natural";
 const char QueryRequest::kFindCommandName[] = "find";
 const char QueryRequest::kShardVersionField[] = "shardVersion";
 
-QueryRequest::QueryRequest(NamespaceString nss) : _nss(std::move(nss)) {}
-QueryRequest::QueryRequest(CollectionUUID uuid) : _uuid(std::move(uuid)) {}
+
+QueryRequest::QueryRequest(NamespaceString&& nss) : _nss{std::move(nss)} {}
+QueryRequest::QueryRequest(CollectionUUID uuid) : _uuid{uuid} {}
+QueryRequest::QueryRequest(const NamespaceString& nss) : _nss{nss} {}
+
+void QueryRequest::resetEmpty() {
+    // NamespaceString _nss;
+    // OptionalCollectionUUID _uuid;
+
+    _filter.reset();
+    _proj.reset();
+    _sort.reset();
+    _hint.reset();
+    _readConcern.reset();
+    _collation.reset();
+    _unwrappedReadPref.reset();
+    _wantMore = true;
+    _skip.reset();
+    _limit.reset();
+    _batchSize.reset();
+    _ntoreturn.reset();
+    _explain = false;
+    _comment.clear();
+    _maxScan = 0;
+    _maxTimeMS = 0;
+    _min.reset();
+    _max.reset();
+    _returnKey = false;
+    _showRecordId = false;
+    _hasReadPref = false;
+    _tailableMode = TailableModeEnum::kNormal;
+    _slaveOk = false;
+    _oplogReplay = false;
+    _noCursorTimeout = false;
+    _exhaust = false;
+    _allowPartialResults = false;
+    _replicationTerm.reset();
+}
+
+void QueryRequest::reset(NamespaceString&& nss) {
+    resetEmpty();
+    _nss = std::move(nss);
+    _uuid.reset();
+}
+
+void QueryRequest::reset(CollectionUUID uuid) {
+    resetEmpty();
+    _nss.reset();
+    _uuid = uuid;
+}
+
+void QueryRequest::reset(const NamespaceString& nss) {
+    resetEmpty();
+    _nss = nss;
+    _uuid.reset();
+}
+
+void QueryRequest:: reset(const QueryRequest& qr){
+    *this = qr;
+}
 
 void QueryRequest::refreshNSS(OperationContext* opCtx) {
     if (_uuid) {
@@ -127,9 +188,9 @@ void QueryRequest::refreshNSS(OperationContext* opCtx) {
 }
 
 // static
-StatusWith<unique_ptr<QueryRequest>> QueryRequest::parseFromFindCommand(unique_ptr<QueryRequest> qr,
-                                                                        const BSONObj& cmdObj,
-                                                                        bool isExplain) {
+StatusWith<QueryRequest::UPtr> QueryRequest::parseFromFindCommand(QueryRequest::UPtr qr,
+                                                                  const BSONObj& cmdObj,
+                                                                  bool isExplain) {
     qr->_explain = isExplain;
     bool tailable = false;
     bool awaitData = false;
@@ -378,9 +439,7 @@ StatusWith<unique_ptr<QueryRequest>> QueryRequest::parseFromFindCommand(unique_p
         } else if (!isGenericArgument(fieldName)) {
             return Status(ErrorCodes::FailedToParse,
                           str::stream() << "Failed to parse: " << cmdObj.toString() << ". "
-                                        << "Unrecognized field '"
-                                        << fieldName
-                                        << "'.");
+                                        << "Unrecognized field '" << fieldName << "'.");
         }
     }
 
@@ -396,19 +455,37 @@ StatusWith<unique_ptr<QueryRequest>> QueryRequest::parseFromFindCommand(unique_p
         return validateStatus;
     }
 
-    return std::move(qr);
+    return qr;
 }
 
-StatusWith<unique_ptr<QueryRequest>> QueryRequest::makeFromFindCommand(NamespaceString nss,
-                                                                       const BSONObj& cmdObj,
-                                                                       bool isExplain) {
+StatusWith<QueryRequest::UPtr> QueryRequest::makeFromFindCommand(NamespaceString&& nss,
+                                                                 const BSONObj& cmdObj,
+                                                                 bool isExplain) {
     BSONElement first = cmdObj.firstElement();
     if (first.type() == BinData && first.binDataType() == BinDataType::newUUID) {
         auto uuid = uassertStatusOK(UUID::parse(first));
-        auto qr = stdx::make_unique<QueryRequest>(uuid);
+        // auto qr = stdx::make_unique<QueryRequest>(uuid);
+        auto qr = ObjectPool<QueryRequest>::newObject(uuid);
         return parseFromFindCommand(std::move(qr), cmdObj, isExplain);
     } else {
-        auto qr = stdx::make_unique<QueryRequest>(nss);
+        // auto qr = stdx::make_unique<QueryRequest>(nss);
+        auto qr = ObjectPool<QueryRequest>::newObject(std::move(nss));
+        return parseFromFindCommand(std::move(qr), cmdObj, isExplain);
+    }
+}
+
+StatusWith<QueryRequest::UPtr> QueryRequest::makeFromFindCommand(const NamespaceString& nss,
+                                                                 const BSONObj& cmdObj,
+                                                                 bool isExplain) {
+    BSONElement first = cmdObj.firstElement();
+    if (first.type() == BinData && first.binDataType() == BinDataType::newUUID) {
+        auto uuid = uassertStatusOK(UUID::parse(first));
+        // auto qr = stdx::make_unique<QueryRequest>(uuid);
+        auto qr = ObjectPool<QueryRequest>::newObject(uuid);
+        return parseFromFindCommand(std::move(qr), cmdObj, isExplain);
+    } else {
+        // auto qr = stdx::make_unique<QueryRequest>(nss);
+        auto qr = ObjectPool<QueryRequest>::newObject(nss);
         return parseFromFindCommand(std::move(qr), cmdObj, isExplain);
     }
 }
@@ -595,32 +672,32 @@ Status QueryRequest::validate() const {
 
     if (_limit && *_limit < 0) {
         return Status(ErrorCodes::BadValue,
-                      str::stream() << "Limit value must be non-negative, but received: "
-                                    << *_limit);
+                      str::stream()
+                          << "Limit value must be non-negative, but received: " << *_limit);
     }
 
     if (_batchSize && *_batchSize < 0) {
         return Status(ErrorCodes::BadValue,
-                      str::stream() << "BatchSize value must be non-negative, but received: "
-                                    << *_batchSize);
+                      str::stream()
+                          << "BatchSize value must be non-negative, but received: " << *_batchSize);
     }
 
     if (_ntoreturn && *_ntoreturn < 0) {
         return Status(ErrorCodes::BadValue,
-                      str::stream() << "NToReturn value must be non-negative, but received: "
-                                    << *_ntoreturn);
+                      str::stream()
+                          << "NToReturn value must be non-negative, but received: " << *_ntoreturn);
     }
 
     if (_maxScan < 0) {
         return Status(ErrorCodes::BadValue,
-                      str::stream() << "MaxScan value must be non-negative, but received: "
-                                    << _maxScan);
+                      str::stream()
+                          << "MaxScan value must be non-negative, but received: " << _maxScan);
     }
 
     if (_maxTimeMS < 0) {
         return Status(ErrorCodes::BadValue,
-                      str::stream() << "MaxTimeMS value must be non-negative, but received: "
-                                    << _maxTimeMS);
+                      str::stream()
+                          << "MaxTimeMS value must be non-negative, but received: " << _maxTimeMS);
     }
 
     if (_tailableMode != TailableModeEnum::kNormal) {
@@ -720,8 +797,9 @@ bool QueryRequest::isValidSortOrder(const BSONObj& sortObj) {
 //
 
 // static
-StatusWith<unique_ptr<QueryRequest>> QueryRequest::fromLegacyQueryMessage(const QueryMessage& qm) {
-    auto qr = stdx::make_unique<QueryRequest>(NamespaceString(qm.ns));
+StatusWith<QueryRequest::UPtr> QueryRequest::fromLegacyQueryMessage(const QueryMessage& qm) {
+    // auto qr = stdx::make_unique<QueryRequest>(NamespaceString(qm.ns));
+    auto qr = ObjectPool<QueryRequest>::newObject(NamespaceString(qm.ns));
 
     Status status = qr->init(qm.ntoskip, qm.ntoreturn, qm.queryOptions, qm.query, qm.fields, true);
     if (!status.isOK()) {
@@ -731,20 +809,21 @@ StatusWith<unique_ptr<QueryRequest>> QueryRequest::fromLegacyQueryMessage(const 
     return std::move(qr);
 }
 
-StatusWith<unique_ptr<QueryRequest>> QueryRequest::fromLegacyQuery(NamespaceString nss,
-                                                                   const BSONObj& queryObj,
-                                                                   const BSONObj& proj,
-                                                                   int ntoskip,
-                                                                   int ntoreturn,
-                                                                   int queryOptions) {
-    auto qr = stdx::make_unique<QueryRequest>(nss);
+StatusWith<QueryRequest::UPtr> QueryRequest::fromLegacyQuery(NamespaceString nss,
+                                                             const BSONObj& queryObj,
+                                                             const BSONObj& proj,
+                                                             int ntoskip,
+                                                             int ntoreturn,
+                                                             int queryOptions) {
+    // auto qr = stdx::make_unique<QueryRequest>(nss);
+    auto qr = ObjectPool<QueryRequest>::newObject(nss);
 
     Status status = qr->init(ntoskip, ntoreturn, queryOptions, queryObj, proj, true);
     if (!status.isOK()) {
         return status;
     }
 
-    return std::move(qr);
+    return qr;
 }
 
 Status QueryRequest::init(int ntoskip,

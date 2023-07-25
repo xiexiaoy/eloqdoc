@@ -205,7 +205,7 @@ public:
      * 'dropIndexes' op where the 'o' field is the name of the index and the 'o2' field is the
      * index info. The index info can then be used to reconstruct the index on rollback.
      *
-     * If a user specifies {dropIndexes: 'foo', index: '*'}, each index dropped will have its own
+     * If a user specifonDropIndexies {dropIndexes: 'foo', index: '*'}, each index dropped will have its own
      * oplog entry. This means it's possible to roll back half of the index drops.
      */
     virtual void onDropIndex(OperationContext* opCtx,
@@ -341,8 +341,10 @@ protected:
 struct OpObserver::Times {
     static Times& get(OperationContext*);
 
+    void reset();
+    
     std::vector<repl::OpTime> reservedOpTimes;
-
+    
 private:
     friend OpObserver::ReservedTimes;
 

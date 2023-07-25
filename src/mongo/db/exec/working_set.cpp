@@ -50,6 +50,16 @@ WorkingSet::~WorkingSet() {
     }
 }
 
+void WorkingSet::reset() {
+    for (auto& i : _data) {
+        delete i.member;
+    }
+    _data.clear();
+    _freeList = INVALID_ID;
+    _flagged.clear();
+    _yieldSensitiveIds.clear();
+}
+
 WorkingSetID WorkingSet::allocate() {
     if (_freeList == INVALID_ID) {
         // The free list is empty so we need to make a single new WSM to return. This relies on

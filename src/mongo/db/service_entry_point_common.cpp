@@ -156,9 +156,10 @@ void generateLegacyQueryErrorResponse(const AssertionException& exception,
     curop->debug().errInfo = exception.toStatus();
 
     log(LogComponent::kQuery) << "assertion " << exception.toString() << " ns:" << queryMessage.ns
-                              << " query:" << (queryMessage.query.valid(BSONVersion::kLatest)
-                                                   ? redact(queryMessage.query)
-                                                   : "query object is corrupt");
+                              << " query:"
+                              << (queryMessage.query.valid(BSONVersion::kLatest)
+                                      ? redact(queryMessage.query)
+                                      : "query object is corrupt");
     if (queryMessage.ntoskip || queryMessage.ntoreturn) {
         log(LogComponent::kQuery) << " ntoskip:" << queryMessage.ntoskip
                                   << " ntoreturn:" << queryMessage.ntoreturn;
@@ -342,6 +343,7 @@ StatusWith<repl::ReadConcernArgs> _extractReadConcern(const CommandInvocation* i
         }
     }
 
+    /* No need for Eloq
     if (!invocation->supportsReadConcern(readConcernArgs.getLevel())) {
         // We must be in a transaction if the readConcern level was upconverted to snapshot and the
         // command must support readConcern level snapshot in order to be supported in transactions.
@@ -353,7 +355,7 @@ StatusWith<repl::ReadConcernArgs> _extractReadConcern(const CommandInvocation* i
                 str::stream() << "Command does not support read concern "
                               << readConcernArgs.toString()};
     }
-
+    */
     return readConcernArgs;
 }
 
@@ -658,7 +660,7 @@ void execCommandDatabase(OperationContext* opCtx,
 
         evaluateFailCommandFailPoint(opCtx, command->getName());
 
-        const auto dbname = request.getDatabase().toString();
+        auto dbname = request.getDatabase();  //.toString();
         uassert(
             ErrorCodes::InvalidNamespace,
             str::stream() << "Invalid database name: '" << dbname << "'",
@@ -826,8 +828,10 @@ void execCommandDatabase(OperationContext* opCtx,
                 (sessionOptions->getStartTransaction() == boost::optional<bool>(true));
             readConcernArgs = uassertStatusOK(
                 _extractReadConcern(invocation.get(), request.body, upconvertToSnapshot));
+            opCtx->setIsolationLevel(readConcernArgs.getOriginalLevel());
         }
 
+        /* No need for Eloq
         if (readConcernArgs.getArgsAtClusterTime()) {
             uassert(ErrorCodes::InvalidOptions,
                     "atClusterTime is only used for testing",
@@ -868,6 +872,7 @@ void execCommandDatabase(OperationContext* opCtx,
 
         oss.setAllowImplicitCollectionCreation(allowImplicitCollectionCreationField);
         ScopedOperationCompletionShardingActions operationCompletionShardingActions(opCtx);
+        */
 
         // This may trigger the maxTimeAlwaysTimeOut failpoint.
         auto status = opCtx->checkForInterruptNoAssert();
@@ -893,7 +898,8 @@ void execCommandDatabase(OperationContext* opCtx,
             rpc::TrackingMetadata::get(opCtx).setIsLogged(true);
         }
 
-        behaviors.waitForReadConcern(opCtx, invocation.get(), request);
+        // No need for Eloq
+        // behaviors.waitForReadConcern(opCtx, invocation.get(), request);
 
         try {
             if (!runCommandImpl(opCtx,
@@ -1019,8 +1025,8 @@ DbResponse receivedCommands(OperationContext* opCtx,
             // However, the complete command object will still be echoed to the client.
             if (!(c = CommandHelpers::findCommand(request.getCommandName()))) {
                 globalCommandRegistry()->incrementUnknownCommands();
-                std::string msg = str::stream() << "no such command: '" << request.getCommandName()
-                                                << "'";
+                std::string msg = str::stream()
+                    << "no such command: '" << request.getCommandName() << "'";
                 LOG(2) << msg;
                 uasserted(ErrorCodes::CommandNotFound, str::stream() << msg);
             }
@@ -1345,10 +1351,8 @@ DbResponse ServiceEntryPointCommon::handleRequest(OperationContext* opCtx,
                 if (!opCtx->getClient()->isInDirectClient()) {
                     uassert(18663,
                             str::stream() << "legacy writeOps not longer supported for "
-                                          << "versioned connections, ns: "
-                                          << nsString.ns()
-                                          << ", op: "
-                                          << networkOpToString(op),
+                                          << "versioned connections, ns: " << nsString.ns()
+                                          << ", op: " << networkOpToString(op),
                             !ShardedConnectionInfo::get(&c, false));
                 }
 

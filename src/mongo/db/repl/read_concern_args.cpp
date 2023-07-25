@@ -36,6 +36,7 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/logical_time.h"
 #include "mongo/db/repl/bson_extract_optime.h"
+#include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
 using std::string;
@@ -51,6 +52,17 @@ constexpr StringData kLinearizableReadConcernStr = "linearizable"_sd;
 constexpr StringData kAvailableReadConcernStr = "available"_sd;
 constexpr StringData kSnapshotReadConcernStr = "snapshot"_sd;
 
+// The ReadConcern in Eloq actually represents the isolation level
+constexpr StringData kEloqReadCommittedIsolationLevelStr = "ReadCommitted"_sd;
+constexpr StringData kEloqSnapshotIsolationLevelStr = "Snapshot"_sd;
+constexpr StringData kEloqRepeatableReadIsolationLevelStr = "RepeatableRead"_sd;
+constexpr StringData kEloqIsolationLevelSerializableStr = "Serializable"_sd;
+
+constexpr StringData kReadConcernDeprecationWarning =
+    "The ReadConcern value of 'local', 'majority', 'linearizable', 'available', "
+    "and 'snapshot' is deprecated. Please switch to the Eloq isolation levels: "
+    "'ReadCommitted', 'Snapshot', 'RepeatableRead', or 'Serializable'. Any other "
+    "value specified will be interpreted as 'ReadCommitted' in Eloq storage engine"_sd;
 }  // unnamed namespace
 
 const string ReadConcernArgs::kReadConcernFieldName("readConcern");
@@ -62,6 +74,14 @@ const string ReadConcernArgs::kLevelFieldName("level");
 
 const OperationContext::Decoration<ReadConcernArgs> ReadConcernArgs::get =
     OperationContext::declareDecoration<ReadConcernArgs>();
+
+void ReadConcernArgs::reset() {
+    _opTime.reset();
+    _afterClusterTime.reset();
+    _atClusterTime.reset();
+    _level.reset();
+    _originalLevel.reset();
+}
 
 ReadConcernArgs::ReadConcernArgs() = default;
 
@@ -91,6 +111,20 @@ bool ReadConcernArgs::isEmpty() const {
 }
 
 ReadConcernLevel ReadConcernArgs::getLevel() const {
+    // // This function will influence `PlanExecutor::YieldPolicy`. See
+    // // src/mongo/db/commands/find_and_modify.cpp:151
+    // if (_level &&
+    //     ((_level.get() == ReadConcernLevel::kEloqReadCommittedIsolationLevel) ||
+    //      (_level.get() == ReadConcernLevel::kEloqSnapshotIsolationLevel) ||
+    //      (_level.get() == ReadConcernLevel::kEloqRepeatableReadIsolationLevel) ||
+    //      (_level.get() == ReadConcernLevel::kEloqSerializableIsolationLevel))) {
+    //     // Eloq isolation level is interpreted as ReadConcernLevel::kSnapshotReadConcern to
+    //     maintain
+    //     // compatibility with older MongoDB code.
+    //     return ReadConcernLevel::kSnapshotReadConcern;
+    // } else {
+    //     return _level.value_or(ReadConcernLevel::kLocalReadConcern);
+    // }
     return _level.value_or(ReadConcernLevel::kLocalReadConcern);
 }
 
@@ -166,42 +200,60 @@ Status ReadConcernArgs::initialize(const BSONElement& readConcernElem) {
                 return readCommittedStatus;
             }
 
-            if (levelString == kLocalReadConcernStr) {
-                _level = ReadConcernLevel::kLocalReadConcern;
-            } else if (levelString == kMajorityReadConcernStr) {
-                _level = ReadConcernLevel::kMajorityReadConcern;
-            } else if (levelString == kLinearizableReadConcernStr) {
-                _level = ReadConcernLevel::kLinearizableReadConcern;
-            } else if (levelString == kAvailableReadConcernStr) {
-                _level = ReadConcernLevel::kAvailableReadConcern;
-            } else if (levelString == kSnapshotReadConcernStr) {
+            if (levelString == kEloqReadCommittedIsolationLevelStr) {
+                _originalLevel = ReadConcernLevel::kEloqReadCommittedIsolationLevel;
+                _level = ReadConcernLevel::kSnapshotReadConcern;
+            } else if (levelString == kEloqSnapshotIsolationLevelStr) {
+                _originalLevel = ReadConcernLevel::kEloqSnapshotIsolationLevel;
+                _level = ReadConcernLevel::kSnapshotReadConcern;
+            } else if (levelString == kEloqRepeatableReadIsolationLevelStr) {
+                _originalLevel = ReadConcernLevel::kEloqRepeatableReadIsolationLevel;
+                _level = ReadConcernLevel::kSnapshotReadConcern;
+            } else if (levelString == kEloqIsolationLevelSerializableStr) {
+                _originalLevel = ReadConcernLevel::kEloqSerializableIsolationLevel;
                 _level = ReadConcernLevel::kSnapshotReadConcern;
             } else {
-                return Status(ErrorCodes::FailedToParse,
-                              str::stream() << kReadConcernFieldName << '.' << kLevelFieldName
-                                            << " must be either 'local', 'majority', "
-                                               "'linearizable', 'available', or 'snapshot'");
+                warning() << kReadConcernDeprecationWarning;
+
+                if (levelString == kLocalReadConcernStr) {
+                    _level = ReadConcernLevel::kLocalReadConcern;
+                } else if (levelString == kMajorityReadConcernStr) {
+                    _level = ReadConcernLevel::kMajorityReadConcern;
+                } else if (levelString == kLinearizableReadConcernStr) {
+                    _level = ReadConcernLevel::kLinearizableReadConcern;
+                } else if (levelString == kAvailableReadConcernStr) {
+                    _level = ReadConcernLevel::kAvailableReadConcern;
+                } else if (levelString == kSnapshotReadConcernStr) {
+                    _level = ReadConcernLevel::kSnapshotReadConcern;
+                } else {
+                    return Status(
+                        ErrorCodes::FailedToParse,
+                        str::stream()
+                            << kReadConcernFieldName << '.' << kLevelFieldName
+                            << " must be either Eloq isolation level(like 'ReadCommitted', "
+                               "'Snapshot', 'local', 'RepeatableRead' or 'Serializable') or legacy "
+                               "MongoDB read concern(like 'majority', "
+                               "'linearizable', 'available', or 'snapshot')");
+                }
             }
+
         } else {
             return Status(ErrorCodes::InvalidOptions,
                           str::stream() << "Unrecognized option in " << kReadConcernFieldName
-                                        << ": "
-                                        << fieldName);
+                                        << ": " << fieldName);
         }
     }
 
     if (_afterClusterTime && _opTime) {
         return Status(ErrorCodes::InvalidOptions,
                       str::stream() << "Can not specify both " << kAfterClusterTimeFieldName
-                                    << " and "
-                                    << kAfterOpTimeFieldName);
+                                    << " and " << kAfterOpTimeFieldName);
     }
 
     if (_afterClusterTime && _atClusterTime) {
         return Status(ErrorCodes::InvalidOptions,
                       str::stream() << "Can not specify both " << kAfterClusterTimeFieldName
-                                    << " and "
-                                    << kAtClusterTimeFieldName);
+                                    << " and " << kAtClusterTimeFieldName);
     }
 
     // Note: 'available' should not be used with after cluster time, as cluster time can wait for
@@ -211,30 +263,24 @@ Status ReadConcernArgs::initialize(const BSONElement& readConcernElem) {
         getLevel() != ReadConcernLevel::kLocalReadConcern &&
         getLevel() != ReadConcernLevel::kSnapshotReadConcern) {
         return Status(ErrorCodes::InvalidOptions,
-                      str::stream() << kAfterClusterTimeFieldName << " field can be set only if "
-                                    << kLevelFieldName
-                                    << " is equal to "
-                                    << kMajorityReadConcernStr
-                                    << ", "
-                                    << kLocalReadConcernStr
-                                    << ", or "
-                                    << kSnapshotReadConcernStr);
+                      str::stream()
+                          << kAfterClusterTimeFieldName << " field can be set only if "
+                          << kLevelFieldName << " is equal to " << kMajorityReadConcernStr << ", "
+                          << kLocalReadConcernStr << ", or " << kSnapshotReadConcernStr);
     }
 
     if (_opTime && getLevel() == ReadConcernLevel::kSnapshotReadConcern) {
         return Status(ErrorCodes::InvalidOptions,
-                      str::stream() << kAfterOpTimeFieldName << " field cannot be set if "
-                                    << kLevelFieldName
-                                    << " is equal to "
-                                    << kSnapshotReadConcernStr);
+                      str::stream()
+                          << kAfterOpTimeFieldName << " field cannot be set if " << kLevelFieldName
+                          << " is equal to " << kSnapshotReadConcernStr);
     }
 
     if (_atClusterTime && getLevel() != ReadConcernLevel::kSnapshotReadConcern) {
         return Status(ErrorCodes::InvalidOptions,
-                      str::stream() << kAtClusterTimeFieldName << " field can be set only if "
-                                    << kLevelFieldName
-                                    << " is equal to "
-                                    << kSnapshotReadConcernStr);
+                      str::stream()
+                          << kAtClusterTimeFieldName << " field can be set only if "
+                          << kLevelFieldName << " is equal to " << kSnapshotReadConcernStr);
     }
 
     if (_afterClusterTime && _afterClusterTime == LogicalTime::kUninitialized) {
@@ -251,6 +297,15 @@ Status ReadConcernArgs::initialize(const BSONElement& readConcernElem) {
 }
 
 Status ReadConcernArgs::upconvertReadConcernLevelToSnapshot() {
+    if (_originalLevel &&
+        ((*_originalLevel == ReadConcernLevel::kEloqReadCommittedIsolationLevel) ||
+         (*_originalLevel == ReadConcernLevel::kEloqSnapshotIsolationLevel) ||
+         (*_originalLevel == ReadConcernLevel::kEloqRepeatableReadIsolationLevel) ||
+         (*_originalLevel == ReadConcernLevel::kEloqSerializableIsolationLevel))) {
+        // Handle Eloq isolation level
+        return Status::OK();
+    }
+
     if (_level && *_level != ReadConcernLevel::kSnapshotReadConcern &&
         *_level != ReadConcernLevel::kMajorityReadConcern &&
         *_level != ReadConcernLevel::kLocalReadConcern) {
@@ -262,8 +317,7 @@ Status ReadConcernArgs::upconvertReadConcernLevelToSnapshot() {
     if (_opTime) {
         return Status(ErrorCodes::InvalidOptions,
                       str::stream() << "Cannot upconvert the readConcern level to 'snapshot' when '"
-                                    << kAfterOpTimeFieldName
-                                    << "' is provided");
+                                    << kAfterOpTimeFieldName << "' is provided");
     }
 
     _originalLevel = _level ? *_level : ReadConcernLevel::kLocalReadConcern;

@@ -31,6 +31,7 @@
 #pragma once
 
 #include <limits>
+#include <utility>
 
 #include "mongo/base/static_assert.h"
 #include "mongo/bson/bsonmisc.h"
@@ -59,6 +60,13 @@ public:
      */
     static const Version kLatestVersion = Version::V1;
 
+
+    // Encode the size of a RecordId binary string using up to 4 bytes, 7 bits per byte.
+    // This supports encoding sizes that fit into 28 bits, which largely covers the
+    // maximum BSON size.
+    static const int kRecordIdStrEncodedSizeMaxBytes = 4;
+
+
     /**
      * Encodes info needed to restore the original BSONTypes from a KeyString. They cannot be
      * stored in place since we don't want them to affect the ordering (1 and 1.0 compare as
@@ -81,6 +89,10 @@ public:
         static const uint32_t kStoredDecimalExponentMask = (1U << kStoredDecimalExponentBits) - 1;
 
         explicit TypeBits(Version version) : version(version) {
+            reset();
+        }
+        void reset(Version version) {
+            this->version = version;
             reset();
         }
 
@@ -237,7 +249,7 @@ public:
             const TypeBits& _typeBits;
         };
 
-        const Version version;
+        Version version;
 
     private:
         /**
@@ -283,7 +295,12 @@ public:
 
     explicit KeyString(Version version) : version(version), _typeBits(version) {}
 
-    KeyString(Version version, const BSONObj& obj, Ordering ord, RecordId recordId)
+    void reset(Version version) {
+        this->version = version;
+        this->_typeBits.reset(version);
+    }
+
+    KeyString(Version version, const BSONObj& obj, Ordering ord, const RecordId& recordId)
         : KeyString(version) {
         resetToKey(obj, ord, recordId);
     }
@@ -319,6 +336,11 @@ public:
     static BSONObj toBsonSafe(const char* buffer, size_t len, Ordering ord, const TypeBits& types);
 
     /**
+     * Decodes a RecordId from end of a buffer in string format
+     */
+    static RecordId decodeRecordIdStrAtEnd(const void* bufferRaw, size_t bufSize);
+
+    /**
      * Decodes a RecordId from the end of a buffer.
      */
     static RecordId decodeRecordIdAtEnd(const void* buf, size_t size);
@@ -328,7 +350,7 @@ public:
      */
     static RecordId decodeRecordId(BufReader* reader);
 
-    void appendRecordId(RecordId loc);
+    void appendRecordId(const RecordId& loc);
     void appendTypeBits(const TypeBits& bits);
 
     /**
@@ -340,7 +362,7 @@ public:
         _typeBits.reset();
     }
 
-    void resetToKey(const BSONObj& obj, Ordering ord, RecordId recordId);
+    void resetToKey(const BSONObj& obj, Ordering ord, const RecordId& recordId);
     void resetToKey(const BSONObj& obj, Ordering ord, Discriminator discriminator = kInclusive);
     void resetFromBuffer(const void* buffer, size_t size) {
         _buffer.reset();
@@ -372,9 +394,12 @@ public:
      * Version to use for conversion to/from KeyString. V1 has different encodings for numeric
      * values.
      */
-    const Version version;
+    Version version;
 
 private:
+    void _appendRecordIdLong(int64_t val);
+    void _appendRecordIdStr(const char* str, size_t size);
+
     void _appendAllElementsForIndexing(const BSONObj& obj,
                                        Ordering ord,
                                        Discriminator discriminator);

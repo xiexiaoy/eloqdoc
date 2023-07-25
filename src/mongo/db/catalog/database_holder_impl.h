@@ -28,15 +28,13 @@
 
 #pragma once
 
-#include "mongo/db/catalog/database_holder.h"
-
-#include <set>
-#include <string>
+#include <memory>
+#include <unordered_map>
+#include <vector>
 
 #include "mongo/base/string_data.h"
-#include "mongo/db/namespace_string.h"
-#include "mongo/stdx/mutex.h"
-#include "mongo/util/concurrency/mutex.h"
+#include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/server_options.h"
 #include "mongo/util/string_map.h"
 
 namespace mongo {
@@ -55,7 +53,7 @@ public:
      * Retrieves an already opened database or returns NULL. Must be called with the database
      * locked in at least IS-mode.
      */
-    Database* get(OperationContext* opCtx, StringData ns) const override;
+    Database* get(OperationContext* opCtx, StringData ns)  override;
 
     /**
      * Retrieves a database reference if it is already opened, or opens it if it hasn't been
@@ -86,10 +84,12 @@ public:
     std::set<std::string> getNamesWithConflictingCasing(StringData name) override;
 
 private:
-    std::set<std::string> _getNamesWithConflictingCasing_inlock(StringData name);
+    std::set<std::string> _getNamesWithConflictingCasing_inlock(StringData name) const;
+    using DBMap = std::map<std::string, std::unique_ptr<Database>, std::less<void>>;
 
-    typedef StringMap<Database*> DBs;
-    mutable SimpleMutex _m;
-    DBs _dbs;
+    // mutable std::vector<std::mutex> _dbMapMutexVector{serverGlobalParams.reservedThreadNum + 1};
+    std::vector<DBMap> _dbMapVector{
+        serverGlobalParams.reservedThreadNum +
+        1};  // the first is used for other threads while the rest is used for thread group
 };
 }  // namespace mongo

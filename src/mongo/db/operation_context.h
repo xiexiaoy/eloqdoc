@@ -29,13 +29,16 @@
 #pragma once
 
 #include <boost/optional.hpp>
+#include <functional>
 #include <memory>
+#include <utility>
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/status.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/locker.h"
 #include "mongo/db/logical_session_id.h"
+#include "mongo/db/repl/read_concern_level.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/storage/write_unit_of_work.h"
@@ -75,6 +78,7 @@ class OperationContext : public Decorable<OperationContext> {
 
 public:
     OperationContext(Client* client, unsigned int opId);
+    void reset(Client* client, unsigned int opId);
 
     virtual ~OperationContext() = default;
 
@@ -108,12 +112,18 @@ public:
     WriteUnitOfWork::RecoveryUnitState setRecoveryUnit(RecoveryUnit* unit,
                                                        WriteUnitOfWork::RecoveryUnitState state);
 
+    WriteUnitOfWork::RecoveryUnitState resetRecoveryUnit(WriteUnitOfWork::RecoveryUnitState state);
+
+    // WriteUnitOfWork::RecoveryUnitState setRecoveryUnit(RecoveryUnit::UPtr unit,
+    //                                                    WriteUnitOfWork::RecoveryUnitState state);
     /**
      * Interface for locking.  Caller DOES NOT own pointer.
      */
     Locker* lockState() const {
         return _locker.get();
     }
+
+    void resetLockState();
 
     /**
      * Sets the locker for use by this OperationContext. Call during OperationContext
@@ -425,6 +435,42 @@ public:
      */
     Microseconds getRemainingMaxTimeMicros() const;
 
+    void setCoroutineFunctors(const std::function<void()>* yield,
+                              const std::function<void()>* resume) {
+        _coroYield = yield;
+        _coroResume = resume;
+    }
+
+    std::pair<const std::function<void()>*, const std::function<void()>*> getCoroutineFunctors()
+        const {
+        // Some temporary, auxiliary and background threads, such as
+        // `startPeriodicThreadToAbortExpiredTransactions` and `js`, invoke this function. These
+        // threads share the same OperationContext with the worker thread named `thread_group`, but
+        // they should not call yield or resume functions. Therefore, we need to verify the thread
+        // name.
+        StringData threadName = getThreadName();
+        if (MONGO_likely(threadName.startsWith("thread_group"))) {
+            return {_coroYield, _coroResume};
+        } else {
+            return {nullptr, nullptr};
+        }
+    }
+
+    int getIsolationLevel() const {
+        return _isolationLevel;
+    }
+
+    void setIsolationLevel(repl::ReadConcernLevel level) {
+        if (level == repl::ReadConcernLevel::kLocalReadConcern ||
+            level == repl::ReadConcernLevel::kMajorityReadConcern ||
+            level == repl::ReadConcernLevel::kLinearizableReadConcern ||
+            level == repl::ReadConcernLevel::kAvailableReadConcern ||
+            level == repl::ReadConcernLevel::kSnapshotReadConcern) {
+            level = repl::ReadConcernLevel::kEloqReadCommittedIsolationLevel;
+        }
+        _isolationLevel = static_cast<int>(level);
+    }
+
 private:
     /**
      * Returns true if this operation has a deadline and it has passed according to the fast clock
@@ -458,15 +504,17 @@ private:
 
     friend class WriteUnitOfWork;
     friend class repl::UnreplicatedWritesBlock;
-    Client* const _client;
-    const unsigned int _opId;
+    Client* _client;
+    unsigned int _opId;
 
     boost::optional<LogicalSessionId> _lsid;
     boost::optional<TxnNumber> _txnNumber;
 
-    std::unique_ptr<Locker> _locker;
+    std::unique_ptr<Locker> _locker{nullptr};
 
-    std::unique_ptr<RecoveryUnit> _recoveryUnit;
+    // RecoveryUnit::UPtr _recoveryUnit{nullptr, RecoveryUnit::DefaultDeleter};
+    std::unique_ptr<RecoveryUnit> _recoveryUnit{nullptr};
+
     WriteUnitOfWork::RecoveryUnitState _ruState =
         WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork;
 
@@ -514,6 +562,10 @@ private:
     Timer _elapsedTime;
 
     bool _writesAreReplicated = true;
+
+    const std::function<void()>* _coroYield{nullptr};
+    const std::function<void()>* _coroResume{nullptr};
+    int _isolationLevel{0};
 };
 
 namespace repl {

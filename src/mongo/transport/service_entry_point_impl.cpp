@@ -28,13 +28,13 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
 
-#include "mongo/platform/basic.h"
-
-#include "mongo/transport/service_entry_point_impl.h"
-
 #include <vector>
 
+#include "mongo/base/status.h"
 #include "mongo/db/auth/restriction_environment.h"
+#include "mongo/db/server_options.h"
+#include "mongo/platform/basic.h"
+#include "mongo/transport/service_entry_point_impl.h"
 #include "mongo/transport/service_state_machine.h"
 #include "mongo/transport/session.h"
 #include "mongo/util/log.h"
@@ -71,6 +71,18 @@ ServiceEntryPointImpl::ServiceEntryPointImpl(ServiceContext* svcCtx) : _svcCtx(s
     }
 
     _maxNumConnections = supportedMax;
+
+    if (serverGlobalParams.enableCoroutine && serverGlobalParams.reservedThreadNum) {
+        _coroutineExecutor = std::make_unique<transport::ServiceExecutorCoroutine>(
+            _svcCtx, serverGlobalParams.reservedThreadNum);
+    }
+}
+
+Status ServiceEntryPointImpl::start() {
+    if (_coroutineExecutor) {
+        return _coroutineExecutor->start();
+    } else
+        return Status::OK();
 }
 
 void ServiceEntryPointImpl::startSession(transport::SessionHandle session) {
@@ -99,14 +111,27 @@ void ServiceEntryPointImpl::startSession(transport::SessionHandle session) {
         }
     }
 
+    if (_coroutineExecutor) {
+        MONGO_LOG(0) << "use coroutine service executor";
+        ssm->setServiceExecutor(_coroutineExecutor.get());
+
+        // work balance
+        size_t targetThreadGroupId = connectionCount % serverGlobalParams.reservedThreadNum;
+        ssm->setThreadGroupId(targetThreadGroupId);
+        MONGO_LOG(0) << "Current ssm is assigned to thread group " << targetThreadGroupId;
+    }
+
     // Checking if we successfully added a connection above. Separated from the lock so we don't log
     // while holding it.
     if (connectionCount > _maxNumConnections) {
         if (!quiet) {
-            log() << "connection refused because too many open connections: " << connectionCount;
+            // log() << "connection refused because too many open connections: " << connectionCount;
+            log() << "too many open connections: " << connectionCount;
         }
-        return;
+
+        // return;
     }
+
 
     if (!quiet) {
         const auto word = (connectionCount == 1 ? " connection"_sd : " connections"_sd);
@@ -114,7 +139,7 @@ void ServiceEntryPointImpl::startSession(transport::SessionHandle session) {
               << connectionCount << word << " now open)";
     }
 
-    ssm->setCleanupHook([ this, ssmIt, session = std::move(session) ] {
+    ssm->setCleanupHook([this, ssmIt, session = std::move(session)] {
         size_t connectionCount;
         auto remote = session->remote();
         {
@@ -126,7 +151,6 @@ void ServiceEntryPointImpl::startSession(transport::SessionHandle session) {
         _shutdownCondition.notify_one();
         const auto word = (connectionCount == 1 ? " connection"_sd : " connections"_sd);
         log() << "end connection " << remote << " (" << connectionCount << word << " now open)";
-
     });
 
     auto ownership = ServiceStateMachine::Ownership::kOwned;
@@ -168,8 +192,8 @@ bool ServiceEntryPointImpl::shutdown(Milliseconds timeout) {
     auto noWorkersLeft = [this] { return numOpenSessions() == 0; };
     while (timeSpent < timeout &&
            !_shutdownCondition.wait_for(lk, checkInterval.toSystemDuration(), noWorkersLeft)) {
-        log(LogComponent::kNetwork) << "shutdown: still waiting on " << numOpenSessions()
-                                    << " active workers to drain... ";
+        log(LogComponent::kNetwork)
+            << "shutdown: still waiting on " << numOpenSessions() << " active workers to drain... ";
         timeSpent += checkInterval;
     }
 
