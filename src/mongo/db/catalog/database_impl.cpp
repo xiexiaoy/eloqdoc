@@ -213,7 +213,7 @@ Collection* DatabaseImpl::_getOrCreateCollectionInstance(OperationContext* opCtx
     MONGO_UNREACHABLE;
     // this function is used to construct Collection handler for Mongo
     //
-    Collection* collection = getCollection(opCtx, nss);
+    Collection* collection = getCollection(opCtx, nss, true);
 
     if (collection) {
         return collection;
@@ -494,7 +494,7 @@ void DatabaseImpl::getStats(OperationContext* opCtx, BSONObjBuilder* output, dou
     for (auto it = collections.begin(); it != collections.end(); ++it) {
         const string ns = *it;
 
-        Collection* collection = getCollection(opCtx, ns);
+        Collection* collection = getCollection(opCtx, ns, false);
 
         if (!collection)
             continue;
@@ -600,7 +600,7 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
             "dropCollection() cannot accept a valid drop optime when writes are replicated.");
     }
 
-    Collection* collection = getCollection(opCtx, fullns);
+    Collection* collection = getCollection(opCtx, fullns, true);
 
     if (!collection) {
         return Status::OK();  // Post condition already met.
@@ -777,12 +777,14 @@ void DatabaseImpl::_clearCollectionCache(OperationContext* opCtx,
     _collections.erase(it);
 }
 
-Collection* DatabaseImpl::getCollection(OperationContext* opCtx, StringData ns) {
+Collection* DatabaseImpl::getCollection(OperationContext* opCtx, StringData ns, bool isForWrite) {
     NamespaceString nss{ns};
-    return getCollection(opCtx, nss);
+    return getCollection(opCtx, nss, isForWrite);
 }
 
-Collection* DatabaseImpl::getCollection(OperationContext* opCtx, const NamespaceString& nss) {
+Collection* DatabaseImpl::getCollection(OperationContext* opCtx,
+                                        const NamespaceString& nss,
+                                        bool isForWrite) {
     MONGO_LOG(1) << "DatabaseImpl::getCollection"
                  << ", nss: " << nss.toStringData();
     invariant(_name == nss.db());
@@ -791,7 +793,8 @@ Collection* DatabaseImpl::getCollection(OperationContext* opCtx, const Namespace
     bool exists = false;
     std::string version;
     auto status = opCtx->getServiceContext()->getStorageEngine()->lockCollection(
-        opCtx, nss.toStringData(), false, &exists, &version);
+        opCtx, nss.toStringData(), isForWrite, &exists, &version);
+    uassertStatusOK(status);
     if (!exists) {
         return nullptr;
     }
@@ -835,7 +838,7 @@ Status DatabaseImpl::renameCollection(OperationContext* opCtx,
     NamespaceString fromNSS(fromNS);
     NamespaceString toNSS(toNS);
     {  // remove anything cached
-        Collection* coll = getCollection(opCtx, fromNS);
+        Collection* coll = getCollection(opCtx, fromNS, true);
 
         if (!coll)
             return Status(ErrorCodes::NamespaceNotFound, "collection not found to rename");
@@ -868,7 +871,7 @@ Status DatabaseImpl::renameCollection(OperationContext* opCtx,
 
 Collection* DatabaseImpl::getOrCreateCollection(OperationContext* opCtx,
                                                 const NamespaceString& nss) {
-    Collection* c = getCollection(opCtx, nss);
+    Collection* c = getCollection(opCtx, nss, true);
 
     if (!c) {
         c = createCollection(opCtx, nss.ns());
@@ -882,7 +885,7 @@ void DatabaseImpl::_checkCanCreateCollection(OperationContext* opCtx,
     massert(17399,
             str::stream() << "Cannot create collection " << nss.ns()
                           << " - collection already exists.",
-            getCollection(opCtx, nss) == nullptr);
+            getCollection(opCtx, nss, true) == nullptr);
     uassertNamespaceNotIndex(nss.ns(), "createCollection");
 
     uassert(14037,
@@ -1495,7 +1498,7 @@ StatusWith<NamespaceString> DatabaseImpl::makeUniqueCollectionNamespace(
                        replacePercentSign);
 
         NamespaceString nss(_name, collectionName);
-        if (!getCollection(opCtx, nss)) {
+        if (!getCollection(opCtx, nss, true)) {
             return nss;
         }
     }

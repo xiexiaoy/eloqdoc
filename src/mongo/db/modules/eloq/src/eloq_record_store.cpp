@@ -290,8 +290,9 @@ StatusWith<RecordId> EloqCatalogRecordStore::insertRecord(
                             "may do DDL on the same table.";
         } else {
             if (exist) {
-                return {ErrorCodes::NamespaceExists,
-                        "Collection already exists in Eloq storage engine"};
+                const char* msg = "Collection already exists in Eloq storage engine";
+                warning() << msg << ", ns: " << tableName.StringView();
+                return {ErrorCodes::NamespaceExists, msg};
             }
 
             auto status = ru->createTable(tableName, metadata);

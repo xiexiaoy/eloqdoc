@@ -106,7 +106,8 @@ AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
     if (!db)
         return;
 
-    _coll = db->getCollection(opCtx, _resolvedNss);
+    _coll = db->getCollection(
+        opCtx, _resolvedNss, modeColl == LockMode::MODE_IX || modeColl == LockMode::MODE_X);
     invariant(!nsOrUUID.uuid() || _coll,
               str::stream() << "Collection for " << _resolvedNss.ns()
                             << " disappeared after successufully resolving "
