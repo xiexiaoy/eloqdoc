@@ -145,7 +145,8 @@ public:
 
     void Serialize(std::string& str) const {
         // A 2-byte integer represents key lengths up to 65535, which is far more
-        // enough for MySQL index keys.
+        // enough for EloqDoc index keys.
+        str.reserve(str.size() + sizeof(uint16_t) + packed_key_.size());
         auto len = static_cast<uint16_t>(packed_key_.size());
         auto len_ptr = reinterpret_cast<const char*>(&len);
         str.append(len_ptr, sizeof(uint16_t));

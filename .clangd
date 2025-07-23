@@ -9,6 +9,7 @@ If:
     ]
 CompileFlags:
   CompilationDatabase: ./build
+  Add: [-std=c++17]
 Diagnostics:
   Suppress: builtin_definition
   UnusedIncludes: Strict
@@ -37,6 +38,7 @@ If:
     ]
 CompileFlags:
   CompilationDatabase: src/mongo/db/modules/eloq/build
+  Add: [-std=c++17]
 Diagnostics:
   Suppress: builtin_definition
   UnusedIncludes: Strict

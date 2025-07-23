@@ -82,52 +82,59 @@ public:
      * Keep the same serialization format like the DataStoreServiceClient::SerializeTxRecord
      */
     void Serialize(std::vector<char>& buf, size_t& offset) const override {
-        buf.resize(offset + 2 * sizeof(size_t) + encoded_blob_.size() + unpack_info_.size());
+        uint16_t unpack_info_len = unpack_info_.size();
+        uint32_t encoded_blob_len = encoded_blob_.size();
 
-        size_t len = unpack_info_.size();
-        auto len_ptr = reinterpret_cast<const char*>(&len);
+        buf.resize(offset + sizeof(uint32_t) + encoded_blob_len + sizeof(uint16_t) +
+                   unpack_info_len);
 
-        std::copy(len_ptr, len_ptr + sizeof(size_t), buf.begin() + offset);
-        offset += sizeof(size_t);
+        auto unpack_info_len_ptr = reinterpret_cast<const char*>(&unpack_info_len);
+        std::copy(
+            unpack_info_len_ptr, unpack_info_len_ptr + sizeof(uint16_t), buf.begin() + offset);
+        offset += sizeof(uint16_t);
         std::copy(unpack_info_.begin(), unpack_info_.end(), buf.begin() + offset);
-        offset += unpack_info_.size();
+        offset += unpack_info_len;
 
-        len = encoded_blob_.size();
-        std::copy(len_ptr, len_ptr + sizeof(size_t), buf.begin() + offset);
-        offset += sizeof(size_t);
+        auto encoded_blob_len_ptr = reinterpret_cast<const char*>(&encoded_blob_len);
+        std::copy(
+            encoded_blob_len_ptr, encoded_blob_len_ptr + sizeof(uint32_t), buf.begin() + offset);
+        offset += sizeof(uint32_t);
         std::copy(encoded_blob_.begin(), encoded_blob_.end(), buf.begin() + offset);
-        offset += encoded_blob_.size();
+        offset += encoded_blob_len;
     }
 
     void Serialize(std::string& str) const override {
-        size_t len = unpack_info_.size();
-        auto len_ptr = reinterpret_cast<const char*>(&len);
+        uint16_t unpack_info_len = unpack_info_.size();
+        uint32_t encoded_blob_len = encoded_blob_.size();
 
-        str.append(len_ptr, sizeof(size_t));
-        str.append(unpack_info_.data(), unpack_info_.size());
+        str.reserve(str.size() + sizeof(uint32_t) + encoded_blob_len + sizeof(uint16_t) +
+                    unpack_info_len);
 
-        len = encoded_blob_.size();
-        str.append(len_ptr, sizeof(size_t));
-        str.append(encoded_blob_.data(), encoded_blob_.size());
+
+        auto unpack_info_len_ptr = reinterpret_cast<const char*>(&unpack_info_len);
+        str.append(unpack_info_len_ptr, sizeof(uint16_t));
+        str.append(unpack_info_.data(), unpack_info_len);
+
+        auto encoded_blob_len_ptr = reinterpret_cast<const char*>(&encoded_blob_len);
+        str.append(encoded_blob_len_ptr, sizeof(uint32_t));
+        str.append(encoded_blob_.data(), encoded_blob_len);
     }
 
     size_t SerializedLength() const override {
         // unpack_info_ and encoded_blob_ and their length
-        return sizeof(size_t) * 2 + unpack_info_.size() + encoded_blob_.size();
+        return sizeof(uint16_t) + unpack_info_.size() + sizeof(uint32_t) + encoded_blob_.size();
     }
 
     void Deserialize(const char* buf, size_t& offset) override {
-        auto len = *reinterpret_cast<const size_t*>(buf + offset);
-        offset += sizeof(size_t);
-        unpack_info_.resize(len);
-        std::copy(buf + offset, buf + offset + len, unpack_info_.begin());
-        offset += len;
+        uint16_t unpack_info_len = *reinterpret_cast<const uint16_t*>(buf + offset);
+        offset += sizeof(uint16_t);
+        unpack_info_.assign(buf + offset, buf + offset + unpack_info_len);
+        offset += unpack_info_len;
 
-        len = *reinterpret_cast<const size_t*>(buf + offset);
-        offset += sizeof(size_t);
-        encoded_blob_.resize(len);
-        std::copy(buf + offset, buf + offset + len, encoded_blob_.begin());
-        offset += len;
+        uint32_t encoded_blob_len = *reinterpret_cast<const uint32_t*>(buf + offset);
+        offset += sizeof(uint32_t);
+        encoded_blob_.assign(buf + offset, buf + offset + encoded_blob_len);
+        offset += encoded_blob_len;
     };
 
     static TxRecord::Uptr Create() {
