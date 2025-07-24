@@ -8,7 +8,7 @@
 #
 # <directory_path>: Absolute or relative path to the directory containing .proto files.
 #
-# The function will set COMPILED_PROTO_CC_FILES in the PARENT_SCOPE with a list
+# The function will set COMPILED_PROTO_FILES in the PARENT_SCOPE with a list
 # of generated .pb.cc file paths. The caller should copy this value to their
 # desired variable immediately after calling the function.
 #
@@ -38,7 +38,7 @@ function(compile_protos_in_directory PROTO_DIRECTORY_PATH)
 
     if(NOT _proto_file_basenames)
         message(STATUS "No .proto files found in ${PROTO_DIRECTORY_PATH}.")
-        set(COMPILED_PROTO_CC_FILES "" PARENT_SCOPE) # Set the output variable
+        set(COMPILED_PROTO_FILES "" PARENT_SCOPE) # Set the output variable
         return()
     endif()
 
@@ -66,5 +66,5 @@ function(compile_protos_in_directory PROTO_DIRECTORY_PATH)
     endforeach()
 
     # Set the list of generated .cc files in the parent scope using a fixed variable name
-    set(COMPILED_PROTO_CC_FILES ${_list_of_generated_cc_files} PARENT_SCOPE)
+    set(COMPILED_PROTO_FILES ${_list_of_generated_cc_files} PARENT_SCOPE)
 endfunction()

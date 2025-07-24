@@ -34,11 +34,11 @@ set(LOG_PROTO_DIR_PATH ${CMAKE_CURRENT_SOURCE_DIR}/tx_service/tx-log-protos)
 
 # Call the centralized proto compilation function
 compile_protos_in_directory(${TX_SERVICE_PROTO_DIR_PATH})
-set(TX_COMPILED_PROTO_FILES ${COMPILED_PROTO_CC_FILES}) 
+set(TX_COMPILED_PROTO_FILES ${COMPILED_PROTO_FILES}) 
 message(STATUS "TxService: Compiled TX service protos: ${TX_COMPILED_PROTO_FILES}")
 
 compile_protos_in_directory(${LOG_PROTO_DIR_PATH})
-set(LOG_COMPILED_PROTO_FILES ${COMPILED_PROTO_CC_FILES}) 
+set(LOG_COMPILED_PROTO_FILES ${COMPILED_PROTO_FILES}) 
 message(STATUS "TxService: Compiled Log protos for TX: ${LOG_COMPILED_PROTO_FILES}")
 
 message(STATUS "TX_SERVICE_SOURCE_DIR: ${TX_SERVICE_SOURCE_DIR}") # Changed from message(${TX_SERVICE_SOURCE_DIR}) for clarity
@@ -134,12 +134,12 @@ set(TxService_SOURCES
     ${METRICS_SERVICE_SOURCE_DIR}/src/metrics.cc
 )
 # Add compiled proto files to sources
-if(TX_COMPILED_PROTO_FILES)
-    list(APPEND TxService_SOURCES ${TX_COMPILED_PROTO_FILES})
-    message(STATUS "TxService: Appended TX_COMPILED_PROTO_FILES to TxService_SOURCES.")
-endif()
+list(APPEND TxService_SOURCES ${TX_COMPILED_PROTO_FILES})
+add_custom_target(TX_PROTO_GEN DEPENDS ${TX_COMPILED_PROTO_FILES})
+message(STATUS "TxService: Appended ${TX_COMPILED_PROTO_FILES} to TxService_SOURCES.")
 
 add_library(TX_SERVICE_OBJ OBJECT ${TxService_SOURCES})
+add_dependencies(TX_SERVICE_OBJ TX_PROTO_GEN)
 target_include_directories(TX_SERVICE_OBJ PUBLIC ${INCLUDE_DIR}) # Use PUBLIC if headers are part of the interface
 # target_compile_features(TX_SERVICE_OBJ PUBLIC cxx_std_17) # Already set globally
 
@@ -241,16 +241,14 @@ if(FORK_HM_PROCESS) # FORK_HM_PROCESS is a global option
         ${HOST_MANAGER_SOURCE_DIR}/src/INIReader.cpp
         ${LOG_PROTO_DIR_PATH}/log_agent.cpp
     )
-    if(LOG_COMPILED_PROTO_FILES) 
-        list(APPEND RaftHM_SOURCES ${LOG_COMPILED_PROTO_FILES})
-        message(STATUS "HostManager: Appended LOG_COMPILED_PROTO_FILES to RaftHM_SOURCES.")
-    endif()
-    if(TX_COMPILED_PROTO_FILES) 
-        list(APPEND RaftHM_SOURCES ${TX_COMPILED_PROTO_FILES})
-        message(STATUS "HostManager: Appended TX_COMPILED_PROTO_FILES to RaftHM_SOURCES.")
-    endif()
+    list(APPEND RaftHM_SOURCES ${LOG_COMPILED_PROTO_FILES})
+    add_custom_target(LOG_PROTO_GEN DEPENDS ${LOG_COMPILED_PROTO_FILES})
+    message(STATUS "HostManager: Appended LOG_COMPILED_PROTO_FILES to RaftHM_SOURCES.")
+    list(APPEND RaftHM_SOURCES ${TX_COMPILED_PROTO_FILES})
+    message(STATUS "HostManager: Appended ${TX_COMPILED_PROTO_FILES} to RaftHM_SOURCES.")
 
     add_executable(host_manager ${RaftHM_SOURCES})
+    add_dependencies(host_manager TX_PROTO_GEN LOG_PROTO_GEN)
     message(STATUS "HostManager: Sources for host_manager: ${RaftHM_SOURCES}")
     target_include_directories(host_manager PUBLIC ${HOST_MANAGER_INCLUDE_DIR})
     message(STATUS "HostManager: Include directories for host_manager: ${HOST_MANAGER_INCLUDE_DIR}")

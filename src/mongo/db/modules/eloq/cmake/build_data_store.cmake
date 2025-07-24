@@ -52,7 +52,7 @@ elseif(WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_S3" OR WITH_DATA_STORE ST
     set(ELOQ_DSS_PROTO_DIR_PATH ${CMAKE_CURRENT_SOURCE_DIR}/store_handler/eloq_data_store_service)
     message(NOTICE "data store service proto dir: ${ELOQ_DSS_PROTO_DIR_PATH}")
     compile_protos_in_directory(${ELOQ_DSS_PROTO_DIR_PATH})
-    set(DS_COMPILED_PROTO_FILES ${COMPILED_PROTO_CC_FILES})
+    set(DS_COMPILED_PROTO_FILES ${COMPILED_PROTO_FILES})
     message(STATUS "DataStore: ELOQDSS compiled protos: ${DS_COMPILED_PROTO_FILES}")
     list(APPEND LOCAL_DATA_STORE_INCLUDE_DIRS ${ELOQ_DSS_PROTO_DIR_PATH}) # Add proto dir to includes for this target
 else()

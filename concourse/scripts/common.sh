@@ -49,6 +49,10 @@ compile_and_install() {
             echo "fail to get cmake version"
       fi
 
+      # Detect CPU cores for optimal parallel builds
+      # CPU_CORE_SIZE=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 4)
+      CPU_CORE_SIZE=4
+
       export ASAN_OPTIONS=abort_on_error=1:leak_check_at_exit=0
       echo "cmake compile and install eloq."
       cmake -G "Ninja" \
@@ -66,14 +70,11 @@ compile_and_install() {
             -DWITH_ROCKSDB_CLOUD=OFF \
             -DWITH_DATA_STORE=ELOQDSS_ROCKSDB_CLOUD_S3
 
-      cmake --build src/mongo/db/modules/eloq/build
+      cmake --build src/mongo/db/modules/eloq/build -j"${CPU_CORE_SIZE}"
       cmake --install src/mongo/db/modules/eloq/build
 
       echo "scons compile and install mongo."
 
-      # Detect CPU cores for optimal parallel builds
-      # CPU_CORE_SIZE=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 4)
-      CPU_CORE_SIZE=4
       OPEN_LOG_SERVICE=ON python2 buildscripts/scons.py MONGO_VERSION=4.0.3 \
             VARIANT_DIR=Debug \
             LIBPATH=/usr/local/lib \
@@ -97,6 +98,10 @@ compile_and_install_ent() {
       else
             echo "fail to get cmake version"
       fi
+ 
+      # Detect CPU cores for optimal parallel builds
+      # CPU_CORE_SIZE=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 4)
+      CPU_CORE_SIZE=4
 
       export ASAN_OPTIONS=abort_on_error=1:leak_check_at_exit=0
       echo "cmake compile and install eloq."
@@ -117,14 +122,11 @@ compile_and_install_ent() {
             -DFORK_HM_PROCESS=ON \
             -DOPEN_LOG_SERVICE=OFF
 
-      cmake --build src/mongo/db/modules/eloq/build
+      cmake --build src/mongo/db/modules/eloq/build -j"${CPU_CORE_SIZE}"
       cmake --install src/mongo/db/modules/eloq/build
 
       echo "scons compile and install mongo."
 
-      # Detect CPU cores for optimal parallel builds
-      # CPU_CORE_SIZE=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 4)
-      CPU_CORE_SIZE=4
       env OPEN_LOG_SERVICE=0 WITH_ROCKSDB_CLOUD=S3 FORK_HM_PROCESS=1 \
       python2 buildscripts/scons.py MONGO_VERSION=4.0.3 \
             VARIANT_DIR=Debug \
