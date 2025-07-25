@@ -255,7 +255,7 @@ Status KVCollectionCatalogEntry::prepareForIndexBuild(OperationContext* opCtx,
 void KVCollectionCatalogEntry::indexBuildSuccess(OperationContext* opCtx, StringData indexName) {
     // return;
     // MONGO_UNREACHABLE;
-    
+
     MetaData md = _getMetaData(opCtx);
     int offset = md.findIndexOffset(indexName);
     invariant(offset >= 0);
@@ -281,14 +281,14 @@ void KVCollectionCatalogEntry::updateIndexMetadata(OperationContext* opCtx,
 }
 void KVCollectionCatalogEntry::addUUID(OperationContext* opCtx,
                                        CollectionUUID uuid,
-                                       Collection* coll) {
+                                       Collection::Uptr coll) {
     // Add a UUID to CollectionOptions if a UUID does not yet exist.
     MetaData md = _getMetaData(opCtx);
     if (!md.options.uuid) {
         md.options.uuid = uuid;
         _catalog->putMetaData(opCtx, ns().toString(), md);
         UUIDCatalog& catalog = UUIDCatalog::get(opCtx->getServiceContext());
-        catalog.onCreateCollection(opCtx, coll, uuid);
+        catalog.onCreateCollection(opCtx, std::move(coll), uuid);
     } else {
         fassert(40564, md.options.uuid.get() == uuid);
     }
