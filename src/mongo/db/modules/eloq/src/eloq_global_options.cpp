@@ -690,11 +690,11 @@ Status EloqGlobalOptions::store(const moe::Environment& params,
     }
     if (params.count("storage.eloq.txService.txlogRocksDBCloudReadyTimeout")) {
         eloqGlobalOptions.txlogRocksDBCloudReadyTimeout =
-            params["storage.eloq.txService.txlogRocksDBCloudReadyTimeout"].as<uint32_t>();
+            params["storage.eloq.txService.txlogRocksDBCloudReadyTimeout"].as<int>();
     }
     if (params.count("storage.eloq.txService.txlogRocksDBCloudFileDeletionDelay")) {
         eloqGlobalOptions.txlogRocksDBCloudFileDeletionDelay =
-            params["storage.eloq.txService.txlogRocksDBCloudFileDeletionDelay"].as<uint32_t>();
+            params["storage.eloq.txService.txlogRocksDBCloudFileDeletionDelay"].as<int>();
     }
 
     // Eloq Storage Options
