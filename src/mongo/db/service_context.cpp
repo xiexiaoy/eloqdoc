@@ -163,8 +163,8 @@ void onCreate(T* object, const ObserversContainer& observers) {
 
 ServiceContext::UniqueClient ServiceContext::makeClient(std::string desc,
                                                         transport::SessionHandle session,
-                                                        ServiceStateMachine* stm) {
-    std::unique_ptr<Client> client(new Client(std::move(desc), this, std::move(session), stm));
+                                                        const CoroutineFunctors& coro) {
+    std::unique_ptr<Client> client(new Client(std::move(desc), this, std::move(session), coro));
     onCreate(client.get(), _clientObservers);
     {
         stdx::lock_guard<stdx::mutex> lk(_mutex);

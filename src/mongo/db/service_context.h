@@ -33,6 +33,7 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/global_initializer_registerer.h"
+#include "mongo/base/local_thread_state.h"
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/platform/atomic_word.h"
@@ -304,7 +305,7 @@ public:
      */
     UniqueClient makeClient(std::string desc,
                             transport::SessionHandle session = nullptr,
-                            ServiceStateMachine* stm = nullptr);
+                            const CoroutineFunctors& coro = CoroutineFunctors::Unavailable);
 
     /**
      * Creates a new OperationContext on "client".

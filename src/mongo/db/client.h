@@ -39,6 +39,7 @@
 #include <boost/optional.hpp>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/base/local_thread_state.h"
 #include "mongo/db/client.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/service_context.h"
@@ -50,6 +51,8 @@
 #include "mongo/util/invariant.h"
 #include "mongo/util/net/hostandport.h"
 
+#define D_USE_CORO_SYNC  // Use coroutine cooperative-poll sync, instead of pthread sync.
+
 namespace mongo {
 
 class Collection;
@@ -57,6 +60,92 @@ class OperationContext;
 class ServiceStateMachine;
 
 typedef long long ConnectionId;
+
+/**
+ * coro::Mutex can be used in both pthread/coroutine.
+ * coro::Mutex can be cast to std::mutex.
+ *
+ * coro::ConditionVariable can be used in both pthread/coroutine.
+ * coro::ConditionVariable can be cast to std::condition_variable.
+ *
+ * Unlike boost::fiber, EloqDoc is busy-loop, and there is no waiting queue for blocking
+ * coroutines.
+ */
+namespace coro {
+class Mutex {
+public:
+    void lock();
+    void unlock() {
+        _mux.unlock();
+    }
+
+    bool try_lock() {
+        return _mux.try_lock();
+    }
+
+private:
+    std::mutex _mux;
+};
+
+class ConditionVariable {
+public:
+    void notify_one() noexcept {
+        _cv.notify_one();
+    }
+    void notify_all() noexcept {
+        _cv.notify_all();
+    }
+    void wait(std::unique_lock<Mutex>& lock);
+
+    template <class Predicate>
+    void wait(std::unique_lock<Mutex>& lock, Predicate stop_waiting) {
+        while (!stop_waiting()) {
+            wait(lock);
+        }
+    }
+
+    template <class Clock, class Duration>
+    std::cv_status wait_until(std::unique_lock<Mutex>& lock,
+                              const std::chrono::time_point<Clock, Duration>& timeout_time) {
+        wait(lock);
+        return Clock::now() < timeout_time ? std::cv_status::no_timeout : std::cv_status::timeout;
+    }
+
+    template <class Clock, class Duration, class Predicate>
+    bool wait_until(std::unique_lock<Mutex>& lock,
+                    const std::chrono::time_point<Clock, Duration>& timeout_time,
+                    Predicate stop_waiting) {
+        while (!stop_waiting()) {
+            if (wait_until(lock, timeout_time) == std::cv_status::timeout) {
+                return stop_waiting();
+            }
+        }
+        return true;
+    }
+
+    template <class Rep, class Period>
+    std::cv_status wait_for(std::unique_lock<Mutex>& lock,
+                            const std::chrono::duration<Rep, Period>& rel_time) {
+        return wait_until(lock, std::chrono::steady_clock::now() + rel_time);
+    }
+
+    template <class Rep, class Period, class Predicate>
+    bool wait_for(std::unique_lock<Mutex>& lock,
+                  const std::chrono::duration<Rep, Period>& rel_time,
+                  Predicate stop_waiting) {
+        return wait_until(
+            lock, std::chrono::steady_clock::now() + rel_time, std::move(stop_waiting));
+    }
+
+    std::cv_status wait_until(std::unique_lock<Mutex>& lock, Date_t timeout_time) {
+        wait(lock);
+        return Date_t::now() < timeout_time ? std::cv_status::no_timeout : std::cv_status::timeout;
+    }
+
+private:
+    std::condition_variable _cv;
+};
+}  // namespace coro
 
 /**
  * The database's concept of an outside "client".
@@ -158,15 +247,7 @@ public:
     // Ensures stability of the client's OperationContext. When the client is locked,
     // the OperationContext will not disappear.
     void lock() {
-#ifndef D_USE_CORO_SYNC
         _lock.lock();
-#else
-        while (!_lock.try_lock()) {
-            const CoroutineFunctors& coro = _opCtx->getCoroutineFunctors();
-            (*coro.longResumeFuncPtr)();
-            (*coro.yieldFuncPtr)();
-        }
-#endif
     }
 
     void unlock() {
@@ -226,8 +307,12 @@ public:
         return _prng;
     }
 
-    ServiceStateMachine* getServiceStateMachine() {
-        return _stm;
+    const CoroutineFunctors& coroutineFunctors() const {
+        return _coro;
+    }
+
+    void setCoroutineFunctors(const CoroutineFunctors& coro) {
+        _coro = coro;
     }
 
 private:
@@ -235,7 +320,7 @@ private:
     Client(std::string desc,
            ServiceContext* serviceContext,
            transport::SessionHandle session,
-           ServiceStateMachine* stm);
+           const CoroutineFunctors& coro);
 
     ServiceContext* const _serviceContext;
     const transport::SessionHandle _session;
@@ -247,7 +332,11 @@ private:
     const ConnectionId _connectionId;
 
     // Protects the contents of the Client (such as changing the OperationContext, etc)
+#ifndef D_USE_CORO_SYNC
     SpinLock _lock;
+#else
+    coro::Mutex _lock;
+#endif
 
     // Whether this client is running as DBDirectClient
     bool _inDirectClient = false;
@@ -258,7 +347,7 @@ private:
     PseudoRandom _prng;
 
     // Points to the ServiceStateMachine if it is a remote client.
-    ServiceStateMachine* _stm = nullptr;
+    CoroutineFunctors _coro;
 };
 
 /**
