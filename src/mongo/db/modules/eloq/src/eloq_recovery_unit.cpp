@@ -907,7 +907,11 @@ void EloqRecoveryUnit::_txnOpen(txservice::IsolationLevel isolationLevel) {
     MONGO_LOG(1) << "EloqRecoveryUnit::_txnOpen";
     invariant(!_active);
     if (_inMultiDocumentTransation) {
-        isolationLevel = txservice::IsolationLevel::Snapshot;
+        if (storageGlobalParams.enableMVCC) {
+            isolationLevel = txservice::IsolationLevel::Snapshot;
+        } else {
+            isolationLevel = txservice::IsolationLevel::RepeatableRead;
+        }
     }
     MONGO_LOG(1) << "Opening transaction with isolation level: " << isolationLevel;
     _txm = txservice::NewTxInit(
