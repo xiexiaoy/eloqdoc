@@ -94,6 +94,8 @@ if os.environ.get("OPEN_LOG_SERVICE", "1") in ("1", "ON", "on", "true", "True"):
 else:
     env["CPPPATH"].extend(["$ELOQ_ENGINE_ROOT/eloq_log_service/include"])
 
+if os.environ.get("USE_ROCKSDB_LOG_STATE ", "1") in ("1", "ON", "on", "true", "True"):
+    env.Append(CPPDEFINES=["USE_ROCKSDB_LOG_STATE"])
 if os.environ.get("WITH_ROCKSDB_CLOUD", "0") in ("S3"):
     env.Append(CPPDEFINES=[("WITH_ROCKSDB_CLOUD", 1)])
 if os.environ.get("WITH_ROCKSDB_CLOUD", "0") in ("GCS"):
