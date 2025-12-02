@@ -33,7 +33,15 @@ update_config_template() {
     sed -i "s|eloq_dss_config_file_path.*=.\+|eloq_dss_config_file_path=${WORKSPACE}/eloqsql_src/concourse/scripts/dss_config.example.ini|g" "$config_file"
 }
 
-pushd $WORKSPACE/eloqdoc_src/concourse/
+if [[ -d "$WORKSPACE/eloqdoc_src/concourse" ]]; then
+    pushd "$WORKSPACE/eloqdoc_src/concourse"
+elif [[ -d "$WORKSPACE/eloqdoc_pr/concourse" ]]; then
+    pushd "$WORKSPACE/eloqdoc_pr/concourse"
+else
+    echo "No concourse directory found under \$WORKSPACE" >&2
+    exit 1
+fi
+
 update_config_template ./scripts/data_substrate.cnf
 
 update_config_template ./artifact/ELOQDSS_ROCKSDB/data_substrate.cnf

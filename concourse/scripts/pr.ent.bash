@@ -3,14 +3,10 @@ set -exo pipefail
 
 export PREFIX="/home/eloq/workspace/mongo/install"
 
-source "$(dirname "$0")/common.sh"
+# make coredump dir writable.
+if [ ! -d "/var/crash" ]; then sudo mkdir -p /var/crash; fi
+sudo chmod 777 /var/crash
 
-CWDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-mkdir -p ~/.ssh
-echo "$GIT_SSH_KEY" > ~/.ssh/id_rsa
-chmod 600 ~/.ssh/id_rsa
-ssh-keyscan github.com >> ~/.ssh/known_hosts
 
 ls
 export WORKSPACE=$PWD
@@ -22,9 +18,15 @@ ls
 current_user=$(whoami)
 sudo chown -R $current_user $PWD
 
-# make coredump dir writable.
-if [ ! -d "/var/crash" ]; then sudo mkdir -p /var/crash; fi
-sudo chmod 777 /var/crash
+source "$(dirname "$0")/common.sh"
+
+CWDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+mkdir -p ~/.ssh
+echo "$GIT_SSH_KEY" > ~/.ssh/id_rsa
+chmod 600 ~/.ssh/id_rsa
+ssh-keyscan github.com >> ~/.ssh/known_hosts
+
 
 cd $WORKSPACE/eloqdoc_pr
 pr_branch_name=$(cat .git/resource/metadata.json | jq -r '.[] | select(.name=="head_name") | .value')
@@ -69,7 +71,7 @@ cd /home/$current_user/workspace/mongo
 # Generate unique bucket names for pr test
 timestamp=$(($(date +%s%N)/1000000))
 BUCKET_NAME="pr-test-${timestamp}"
-BUCKET_PREFIX="rocksdb-cloud-"
+BUCKET_PREFIX="eloqdoc-"
 echo "bucket_name is ${BUCKET_PREFIX}${BUCKET_NAME}"
 DATA_DIR="/home/eloq/workspace/mongo/install/data"
 
