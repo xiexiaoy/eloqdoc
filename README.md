@@ -2,7 +2,7 @@
 <a href='https://www.eloqdata.com'>
 <img src="images/eloqdoc_github_logov1.jpg" alt="EloqDoc" height=150></img>
 </a>
-  
+
 ---
 
 [![License](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://github.com/eloqdata/eloqdoc/blob/readme/LICENSE)
@@ -12,6 +12,7 @@
 <a href="https://discord.com/invite/nmYjBkfak6">
   <img alt="EloqDoc" src="https://img.shields.io/badge/discord-blue.svg?logo=discord&logoColor=white">
 </a>
+
 </div>
 
 # EloqDoc
@@ -79,6 +80,7 @@ EloqDoc is a decoupled, distributed database built on [Data Substrate](https://w
 Each EloqDoc instance includes a frontend, compatible with the MongoDB protocol, deployed together with the core TxService to handle data operations. A logically independent LogService handles Write Ahead Logging (WAL) to ensure persistence, while a Storage Service manages memory state checkpoints and cold data storage.
 
 This architecture enable EloqDoc to support:
+
 - **Fast Scaling**: Compute and memory scale independently without disk data movement, enabling rapid elasticity for dynamic workloads.
 - **Storage Flexibility**: Storage scales separately from compute, optimizing resource allocation and reducing waste.
 - **Write Optimization**: Independent redo log scaling boosts write throughput, ideal for high-velocity data ingestion.
@@ -91,6 +93,7 @@ This architecture enable EloqDoc to support:
 All tests were conducted on AWS EC2 i4i.4xlarge instances, featuring 16 vCPUs, 128 GB RAM, and high-performance local NVMe storage. We evaluated EloqDoc against MongoDB Atlas across representative deployment scenarios, ranging from fully in-memory workloads to cases where the working set exceeds cache capacity. Both systems were benchmarked using identical client concurrency levels and dataset characteristics to ensure fairness and reproducibility.
 
 **Key takeaways**
+
 - EloqDoc sustained up to 60% higher throughput than MongoDB Atlas for mixed 1:1 read/write workloads when the active dataset was fully cached.
 - For read-heavy applications, EloqDoc delivered roughly 60% higher peak throughput while maintaining lower latency across the entire concurrency range.
 - When the workload required frequent disk accesses, EloqDoc’s local NVMe cache + object storage design preserved performance and availability, whereas Atlas’s EBS-backed tier became IO-bound.
@@ -125,7 +128,6 @@ For datasets that exceed available memory, we configured both systems to serve 1
 
 We will publish more detailed benchmarks in future.
 
-  
 ---
 
 ## Quick Start
@@ -135,7 +137,7 @@ We will publish more detailed benchmarks in future.
 **Step-1**, download the official package for EloqDoc-RocksDB. Please select the package that matches your operating system.
 
 ```bash
-wget -c https://download.eloqdata.com/eloqdoc/eloqdss_rocksdb/eloqdoc-0.2.6-ubuntu22-amd64.tar.gz
+wget -c https://download.eloqdata.com/eloqdoc/eloqdss_rocksdb/eloqdoc-0.2.7-ubuntu22-amd64.tar.gz
 ```
 
 All released package can be found at [download](https://www.eloqdata.com/download) page.
@@ -143,7 +145,7 @@ All released package can be found at [download](https://www.eloqdata.com/downloa
 **Step-2**, uncompress the package to your `$HOME`.
 
 ```bash
-mkdir $HOME/eloqdoc-rocksdb && tar -xf eloqdoc-0.2.6-ubuntu22-amd64.tar.gz -C $HOME/eloqdoc-rocksdb
+mkdir $HOME/eloqdoc-rocksdb && tar -xf eloqdoc-0.2.7-ubuntu22-amd64.tar.gz -C $HOME/eloqdoc-rocksdb
 ```
 
 After uncompress the package, you should see three directories: `bin`, `lib`, and `etc`.
@@ -190,7 +192,7 @@ Implicit session: session { "id" : UUID("288393c1-aff6-4a84-ad46-dee6691b361d") 
 **Step-1**, download the official package for EloqDoc-RocksDBCloud. Please select the package that matches your operating system.
 
 ```bash
-wget -c https://download.eloqdata.com/eloqdoc/rocks_s3/eloqdoc-0.2.6-ubuntu22-amd64.tar.gz
+wget -c https://download.eloqdata.com/eloqdoc/rocks_s3/eloqdoc-0.2.7-ubuntu22-amd64.tar.gz
 ```
 
 All released package can be found at [download](https://www.eloqdata.com/download) page.
@@ -198,7 +200,7 @@ All released package can be found at [download](https://www.eloqdata.com/downloa
 **Step-2**, uncompress the package to your `$HOME`.
 
 ```bash
-mkdir $HOME/eloqdoc-rocksdbcloud && tar -xf eloqdoc-0.2.6-ubuntu22-amd64.tar.gz -C $HOME/eloqdoc-rocksdbcloud
+mkdir $HOME/eloqdoc-rocksdbcloud && tar -xf eloqdoc-0.2.7-ubuntu22-amd64.tar.gz -C $HOME/eloqdoc-rocksdbcloud
 ```
 
 After uncompress the package, you should see three directories: `bin`, `lib`, and `etc`.
