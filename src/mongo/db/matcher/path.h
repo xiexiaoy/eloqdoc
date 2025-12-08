@@ -84,6 +84,15 @@ public:
 
     // TODO: replace uses of members below with regular construction.
     ElementPath() {}
+
+    void reset(StringData path,
+               LeafArrayBehavior leafArrayBehavior = LeafArrayBehavior::kTraverse,
+               NonLeafArrayBehavior nonLeafArrayBehavior = NonLeafArrayBehavior::kTraverse) {
+        new (this) ElementPath(path, leafArrayBehavior, nonLeafArrayBehavior);
+    }
+
+    void reset() {}
+
     void init(StringData path);
 
     void setLeafArrayBehavior(LeafArrayBehavior leafArrBehavior) {
@@ -202,6 +211,7 @@ public:
 
     virtual ~BSONElementIterator();
 
+    void reset();
     void reset(const ElementPath* path, size_t suffixIndex, BSONElement elementToIterate);
     void reset(const ElementPath* path, const BSONObj& objectToIterate);
 

@@ -686,6 +686,21 @@ public:
         _theend = end - 1;
     }
 
+    void reset(const BSONObj& jso) {
+        int sz = jso.objsize();
+        if (MONGO_unlikely(sz == 0)) {
+            _pos = _theend = 0;
+            return;
+        }
+        _pos = jso.objdata() + 4;
+        _theend = jso.objdata() + sz - 1;
+    }
+
+    void reset(const char* start, const char* end) {
+        _pos = start + 4;
+        _theend = end - 1;
+    }
+
     /** @return true if more elements exist to be enumerated. */
     bool more() {
         return _pos < _theend;

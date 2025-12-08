@@ -97,6 +97,10 @@ BSONElementIterator::BSONElementIterator(const ElementPath* path, const BSONObj&
 
 BSONElementIterator::~BSONElementIterator() {}
 
+void BSONElementIterator::reset() {
+    _path = NULL;
+}
+
 void BSONElementIterator::reset(const ElementPath* path,
                                 size_t suffixIndex,
                                 BSONElement elementToIterate) {
@@ -207,8 +211,8 @@ bool BSONElementIterator::subCursorHasMore() {
             // _subCursor.reset(
             //     new BSONElementIterator(_subCursorPath.get(),
             //     _arrayIterationState._current.Obj()));
-            _subCursor =
-                ObjectPool<BSONElementIterator>::newObject(_arrayIterationState._current.Obj());
+            _subCursor = ObjectPool<BSONElementIterator>::newObject(
+                _subCursorPath.get(), _arrayIterationState._current.Obj());
 
             // Set _arrayIterationState._current to EOO. This is not an implicit array traversal, so
             // we should not override the array offset of the subcursor with the current array
