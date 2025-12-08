@@ -31,6 +31,7 @@
 #pragma once
 
 
+#include "mongo/base/object_pool.h"
 #include "mongo/base/status.h"
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bsonobj.h"
@@ -253,12 +254,15 @@ private:
 
         BSONElement _theArray;
         BSONElement _current;
-        std::unique_ptr<BSONObjIterator> _iterator;
+        // std::unique_ptr<BSONObjIterator> _iterator;
+        std::unique_ptr<BSONObjIterator, ObjectPool<BSONObjIterator>::Deleter> _iterator;
     };
 
     ArrayIterationState _arrayIterationState;
 
-    std::unique_ptr<ElementIterator> _subCursor;
-    std::unique_ptr<ElementPath> _subCursorPath;
+    // std::unique_ptr<ElementIterator> _subCursor;
+    // std::unique_ptr<ElementPath> _subCursorPath;
+    std::unique_ptr<BSONElementIterator, ObjectPool<BSONElementIterator>::Deleter> _subCursor;
+    std::unique_ptr<ElementPath, ObjectPool<ElementPath>::Deleter> _subCursorPath;
 };
-}
+}  // namespace mongo

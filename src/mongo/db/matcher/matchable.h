@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "mongo/base/object_pool.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/field_ref.h"
@@ -49,7 +50,7 @@ public:
      * The neewly returned ElementIterator is allowed to keep a pointer to path.
      * So the caller of this function should make sure path is in scope until
      * the ElementIterator is deallocated
-    */
+     */
     virtual ElementIterator* allocateIterator(const ElementPath* path) const = 0;
 
     virtual void releaseIterator(ElementIterator* iterator) const = 0;
@@ -85,8 +86,10 @@ public:
     }
 
     virtual ElementIterator* allocateIterator(const ElementPath* path) const {
-        if (_iteratorUsed)
-            return new BSONElementIterator(path, _obj);
+        if (_iteratorUsed) {
+            // return new BSONElementIterator(path, _obj);
+            ObjectPool<BSONElementIterator>::newObjectRawPointer(path, _obj);
+        }
         _iteratorUsed = true;
         _iterator.reset(path, _obj);
         return &_iterator;
@@ -96,7 +99,9 @@ public:
         if (iterator == &_iterator) {
             _iteratorUsed = false;
         } else {
-            delete iterator;
+            // delete iterator;
+            ObjectPool<BSONElementIterator>::recycleObject(
+                static_cast<BSONElementIterator*>(iterator));
         }
     }
 
@@ -129,7 +134,8 @@ public:
         const size_t suffixIndex = 1;
 
         if (_iteratorUsed) {
-            return new BSONElementIterator(path, suffixIndex, _elem);
+            // return new BSONElementIterator(path, suffixIndex, _elem);
+            return ObjectPool<BSONElementIterator>::newObjectRawPointer(path, suffixIndex, _elem);
         }
         _iteratorUsed = true;
         _iterator.reset(path, suffixIndex, _elem);
@@ -140,7 +146,9 @@ public:
         if (iterator == &_iterator) {
             _iteratorUsed = false;
         } else {
-            delete iterator;
+            // delete iterator;
+            ObjectPool<BSONElementIterator>::recycleObject(
+                static_cast<BSONElementIterator*>(iterator));
         }
     }
 
@@ -149,4 +157,4 @@ private:
     mutable BSONElementIterator _iterator;
     mutable bool _iteratorUsed;
 };
-}
+}  // namespace mongo

@@ -158,7 +158,8 @@ bool BSONElementIterator::ArrayIterationState::isArrayOffsetMatch(StringData fie
 
 void BSONElementIterator::ArrayIterationState::startIterator(BSONElement e) {
     _theArray = e;
-    _iterator.reset(new BSONObjIterator(_theArray.Obj()));
+    // _iterator.reset(new BSONObjIterator(_theArray.Obj()));
+    _iterator = ObjectPool<BSONObjIterator>::newObject(_theArray.Obj());
 }
 
 bool BSONElementIterator::ArrayIterationState::more() {
@@ -192,7 +193,8 @@ bool BSONElementIterator::subCursorHasMore() {
                 return true;
             }
 
-            _subCursorPath.reset(new ElementPath());
+            // _subCursorPath.reset(new ElementPath());
+            _subCursorPath = ObjectPool<ElementPath>::newObject();
             _subCursorPath->init(_arrayIterationState.restOfPath.substr(
                 _arrayIterationState.nextPieceOfPath.size() + 1));
             _subCursorPath->setLeafArrayBehavior(_path->leafArrayBehavior());
@@ -202,8 +204,11 @@ bool BSONElementIterator::subCursorHasMore() {
             dassert(_subCursorPath->nonLeafArrayBehavior() ==
                     ElementPath::NonLeafArrayBehavior::kTraverse);
 
-            _subCursor.reset(
-                new BSONElementIterator(_subCursorPath.get(), _arrayIterationState._current.Obj()));
+            // _subCursor.reset(
+            //     new BSONElementIterator(_subCursorPath.get(),
+            //     _arrayIterationState._current.Obj()));
+            _subCursor =
+                ObjectPool<BSONElementIterator>::newObject(_arrayIterationState._current.Obj());
 
             // Set _arrayIterationState._current to EOO. This is not an implicit array traversal, so
             // we should not override the array offset of the subcursor with the current array
@@ -282,11 +287,15 @@ bool BSONElementIterator::more() {
             if (eltInArray.type() == Object) {
                 // The current array element is a subdocument.  See if the subdocument generates
                 // any elements matching the remaining subpath.
-                _subCursorPath.reset(new ElementPath());
+                // _subCursorPath.reset(new ElementPath());
+                _subCursorPath = ObjectPool<ElementPath>::newObject();
                 _subCursorPath->init(_arrayIterationState.restOfPath);
                 _subCursorPath->setLeafArrayBehavior(_path->leafArrayBehavior());
 
-                _subCursor.reset(new BSONElementIterator(_subCursorPath.get(), eltInArray.Obj()));
+                // _subCursor.reset(new BSONElementIterator(_subCursorPath.get(),
+                // eltInArray.Obj()));
+                _subCursor = ObjectPool<BSONElementIterator>::newObject(_subCursorPath.get(),
+                                                                        eltInArray.Obj());
                 if (subCursorHasMore()) {
                     return true;
                 }
@@ -308,13 +317,17 @@ bool BSONElementIterator::more() {
                 if (eltInArray.type() == Array) {
                     // The current array element is itself an array.  See if the nested array
                     // has any elements matching the remainihng.
-                    _subCursorPath.reset(new ElementPath());
+                    // _subCursorPath.reset(new ElementPath());
+                    _subCursorPath = ObjectPool<ElementPath>::newObject();
                     _subCursorPath->init(_arrayIterationState.restOfPath.substr(
                         _arrayIterationState.nextPieceOfPath.size() + 1));
                     _subCursorPath->setLeafArrayBehavior(_path->leafArrayBehavior());
-                    BSONElementIterator* real = new BSONElementIterator(
+                    // BSONElementIterator* real = new BSONElementIterator(
+                    //     _subCursorPath.get(), _arrayIterationState._current.Obj());
+                    // _subCursor.reset(real);
+                    _subCursor = ObjectPool<BSONElementIterator>::newObject(
                         _subCursorPath.get(), _arrayIterationState._current.Obj());
-                    _subCursor.reset(real);
+                    BSONElementIterator* real = _subCursor.get();
                     real->_arrayIterationState.reset(_subCursorPath->fieldRef(), 0);
                     real->_arrayIterationState.startIterator(eltInArray);
                     real->_state = IN_ARRAY;
@@ -360,4 +373,4 @@ ElementIterator::Context BSONElementIterator::next() {
     _next.reset();
     return x;
 }
-}
+}  // namespace mongo
