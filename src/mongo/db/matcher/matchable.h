@@ -88,7 +88,7 @@ public:
     virtual ElementIterator* allocateIterator(const ElementPath* path) const {
         if (_iteratorUsed) {
             // return new BSONElementIterator(path, _obj);
-            ObjectPool<BSONElementIterator>::newObjectRawPointer(path, _obj);
+            return ObjectPool<BSONElementIterator>::newObjectRawPointer(path, _obj);
         }
         _iteratorUsed = true;
         _iterator.reset(path, _obj);
