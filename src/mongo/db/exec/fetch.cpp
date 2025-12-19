@@ -89,48 +89,150 @@ PlanStage::StageState FetchStage::doWork(WorkingSetID* out) {
         id = _idRetrying;
         _idRetrying = WorkingSet::INVALID_ID;
     }
-
     if (PlanStage::ADVANCED == status) {
-        WorkingSetMember* member = _ws->get(id);
+        // We have at least one ADVANCED from the child (either a retry or a new id). To reduce
+        // round-trips between fetch and index stages, try to buffer up to _batchSize items from
+        // the child and fetch any documents that are already in memory. If we encounter a
+        // page-in (RecordFetcher), hand it off and yield so the page-in can be satisfied.
 
-        // If there's an obj there, there is no fetching to perform.
-        if (member->hasObj()) {
-            ++_specificStats.alreadyHasObj;
-        } else {
-            // We need a valid RecordId to fetch from and this is the only state that has one.
-            verify(WorkingSetMember::RID_AND_IDX == member->getState());
-            verify(member->hasRecordId());
+        // If we are currently retrying a single id (from prior page-in), honor that first by
+        // treating 'id' as the single ADVANCED item we already have.
 
-            try {
-                if (!_cursor)
-                    _cursor = _collection->getCursor(getOpCtx());
+        // If there are buffered ids from a previous invocation, return those first.
+        if (!_bufferedIds.empty()) {
+            WorkingSetID bufferedId = _bufferedIds.front();
+            _bufferedIds.pop_front();
+            WorkingSetMember* member = _ws->get(bufferedId);
+            return returnIfMatches(member, bufferedId, out);
+        }
 
-                if (auto fetcher = _cursor->fetcherForId(member->recordId)) {
-                    // There's something to fetch. Hand the fetcher off to the WSM, and pass up
-                    // a fetch request.
+        // Attempt to fill the buffer up to _batchSize.
+        StageState lastChildStatus = status;
+        // If 'id' was provided (e.g. retry), process it first.
+        if (id != WorkingSet::INVALID_ID) {
+            WorkingSetMember* member = _ws->get(id);
+            if (member->hasObj()) {
+                ++_specificStats.alreadyHasObj;
+                _bufferedIds.push_back(id);
+            } else {
+                // Need to fetch this id now (or hand off a fetcher).
+                verify(WorkingSetMember::RID_AND_IDX == member->getState());
+                verify(member->hasRecordId());
+                try {
+                    if (!_cursor) {
+                        _cursor = _collection->getCursor(getOpCtx());
+                    }
+
+                    if (auto fetcher = _cursor->fetcherForId(member->recordId)) {
+                        // Hand off fetcher and yield immediately. Prefer returning an already
+                        // buffered item if we had any (we don't here), so just set retry and
+                        // request yield.
+                        _idRetrying = id;
+                        member->setFetcher(fetcher.release());
+                        *out = id;
+                        return NEED_YIELD;
+                    }
+
+                    if (!WorkingSetCommon::fetch(getOpCtx(), _ws, id, _cursor)) {
+                        _ws->free(id);
+                    } else {
+                        _bufferedIds.push_back(id);
+                    }
+                } catch (const WriteConflictException&) {
+                    member->makeObjOwnedIfNeeded();
                     _idRetrying = id;
-                    member->setFetcher(fetcher.release());
-                    *out = id;
+                    *out = WorkingSet::INVALID_ID;
                     return NEED_YIELD;
                 }
-
-                // The doc is already in memory, so go ahead and grab it. Now we have a RecordId
-                // as well as an unowned object
-                if (!WorkingSetCommon::fetch(getOpCtx(), _ws, id, _cursor)) {
-                    _ws->free(id);
-                    return NEED_TIME;
-                }
-            } catch (const WriteConflictException&) {
-                // Ensure that the BSONObj underlying the WorkingSetMember is owned because it may
-                // be freed when we yield.
-                member->makeObjOwnedIfNeeded();
-                _idRetrying = id;
-                *out = WorkingSet::INVALID_ID;
-                return NEED_YIELD;
             }
         }
 
-        return returnIfMatches(member, id, out);
+        // Pull additional ADVANCED items from the child to fill the buffer.
+        while (_bufferedIds.size() < _batchSize) {
+            WorkingSetID childId = WorkingSet::INVALID_ID;
+            StageState s = child()->work(&childId);
+            lastChildStatus = s;
+            if (s == PlanStage::ADVANCED) {
+                WorkingSetMember* member = _ws->get(childId);
+                if (member->hasObj()) {
+                    ++_specificStats.alreadyHasObj;
+                    _bufferedIds.push_back(childId);
+                    continue;
+                }
+
+                verify(WorkingSetMember::RID_AND_IDX == member->getState());
+                verify(member->hasRecordId());
+
+                try {
+                    if (!_cursor) {
+                        _cursor = _collection->getCursor(getOpCtx());
+                    }
+                    if (auto fetcher = _cursor->fetcherForId(member->recordId)) {
+                        // Hand off fetcher for this member and yield. We set retrying id so
+                        // that the next doWork call will resume on this member.
+                        _idRetrying = childId;
+                        member->setFetcher(fetcher.release());
+                        // If we have buffered items, return one now; otherwise yield to let
+                        // the page-in proceed.
+                        if (!_bufferedIds.empty()) {
+                            WorkingSetID outId = _bufferedIds.front();
+                            _bufferedIds.pop_front();
+                            WorkingSetMember* outMember = _ws->get(outId);
+                            return returnIfMatches(outMember, outId, out);
+                        }
+
+                        *out = childId;
+                        return NEED_YIELD;
+                    }
+
+                    if (!WorkingSetCommon::fetch(getOpCtx(), _ws, childId, _cursor)) {
+                        _ws->free(childId);
+                        continue;
+                    }
+
+                    _bufferedIds.push_back(childId);
+                } catch (const WriteConflictException&) {
+                    member->makeObjOwnedIfNeeded();
+                    _idRetrying = childId;
+                    *out = WorkingSet::INVALID_ID;
+                    return NEED_YIELD;
+                }
+            } else if (s == PlanStage::NEED_TIME) {
+                // Child asks us to try again later; if we have buffered items return one,
+                // otherwise propagate NEED_TIME.
+                if (!_bufferedIds.empty()) {
+                    WorkingSetID outId = _bufferedIds.front();
+                    _bufferedIds.pop_front();
+                    WorkingSetMember* outMember = _ws->get(outId);
+                    return returnIfMatches(outMember, outId, out);
+                }
+                return PlanStage::NEED_TIME;
+            } else if (s == PlanStage::NEED_YIELD) {
+                // Propagate the yield to caller.
+                *out = childId;
+                return PlanStage::NEED_YIELD;
+            } else if (s == PlanStage::IS_EOF) {
+                break;
+            } else {
+                // FAILURE/DEAD - propagate immediately.
+                return s;
+            }
+        }
+
+        // If we buffered at least one id, return the first one.
+        if (!_bufferedIds.empty()) {
+            WorkingSetID retId = _bufferedIds.front();
+            _bufferedIds.pop_front();
+            WorkingSetMember* retMember = _ws->get(retId);
+            return returnIfMatches(retMember, retId, out);
+        }
+
+        // Nothing buffered and child exhausted or asked to wait.
+        if (lastChildStatus == PlanStage::IS_EOF) {
+            return PlanStage::IS_EOF;
+        }
+
+        return lastChildStatus;
     } else if (PlanStage::FAILURE == status || PlanStage::DEAD == status) {
         // The stage which produces a failure is responsible for allocating a working set member
         // with error details.
@@ -145,23 +247,27 @@ PlanStage::StageState FetchStage::doWork(WorkingSetID* out) {
 }
 
 void FetchStage::doSaveState() {
-    if (_cursor)
+    if (_cursor) {
         _cursor->saveUnpositioned();
+    }
 }
 
 void FetchStage::doRestoreState() {
-    if (_cursor)
+    if (_cursor) {
         _cursor->restore();
+    }
 }
 
 void FetchStage::doDetachFromOperationContext() {
-    if (_cursor)
+    if (_cursor) {
         _cursor->detachFromOperationContext();
+    }
 }
 
 void FetchStage::doReattachToOperationContext() {
-    if (_cursor)
+    if (_cursor) {
         _cursor->reattachToOperationContext(getOpCtx());
+    }
 }
 
 void FetchStage::doInvalidate(OperationContext* opCtx, const RecordId& dl, InvalidationType type) {

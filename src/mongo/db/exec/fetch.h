@@ -34,6 +34,7 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/record_id.h"
+#include <deque>
 
 namespace mongo {
 
@@ -88,6 +89,14 @@ private:
     const Collection* _collection;
     // Used to fetch Records from _collection.
     std::unique_ptr<SeekableRecordCursor> _cursor;
+
+    // Buffered WorkingSetIDs that have had their objects fetched (or already had objects).
+    // We return these to the caller one-by-one without re-querying the child.
+    std::deque<WorkingSetID> _bufferedIds;
+
+    // How many ids to try to buffer from the child in one go.
+    // This is conservative; if 0, buffering is disabled.
+    const size_t _batchSize = 16;
 
     // _ws is not owned by us.
     WorkingSet* _ws;
