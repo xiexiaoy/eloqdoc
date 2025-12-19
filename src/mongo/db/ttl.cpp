@@ -129,14 +129,28 @@ private:
             !repl::ReplicationCoordinator::get(&opCtx)->getMemberState().readable())
             return;
 
-        TTLCollectionCache& ttlCollectionCache = TTLCollectionCache::get(getGlobalServiceContext());
-        std::vector<std::string> ttlCollections = ttlCollectionCache.getCollections();
+        // EloqDoc: TTLCollectionCache is unreliable.
+        //
+        // TTLCollectionCache& ttlCollectionCache =
+        // TTLCollectionCache::get(getGlobalServiceContext());
+        // std::vector<std::string> ttlCollections = ttlCollectionCache.getCollections();
+        std::vector<std::string> databases, collections;
+        getGlobalServiceContext()->getStorageEngine()->listDatabases(&databases);
+        for (const std::string& dbName : databases) {
+            std::vector<std::string> colls;
+            getGlobalServiceContext()->getStorageEngine()->listCollections(dbName, &colls);
+            collections.insert(collections.end(),
+                               std::make_move_iterator(colls.begin()),
+                               std::make_move_iterator(colls.end()));
+        }
+
         std::vector<BSONObj> ttlIndexes;
 
         ttlPasses.increment();
 
         // Get all TTL indexes from every collection.
-        for (const std::string& collectionNS : ttlCollections) {
+        for (const std::string& collectionNS : collections) {
+            WriteUnitOfWork wuow(&opCtx);
             UninterruptibleLockGuard noInterrupt(opCtx.lockState());
             NamespaceString collectionNSS(collectionNS);
             AutoGetCollection autoGetCollection(&opCtx, collectionNSS, MODE_IS);
@@ -159,7 +173,19 @@ private:
 
         for (const BSONObj& idx : ttlIndexes) {
             try {
-                doTTLForIndex(&opCtx, idx);
+                long long before;
+                const int limits = 1000;
+                do {
+                    before = ttlDeletedDocuments;
+                    auto begin_time = Date_t::now();
+                    WriteUnitOfWork wuow(&opCtx);
+                    doTTLForIndex(&opCtx, idx, limits);
+                    wuow.commit();
+                    auto end_time = Date_t::now();
+                    LOG(1) << "TTL pass deleted " << (ttlDeletedDocuments - before)
+                           << " documents from index " << idx << " in "
+                           << (end_time - begin_time).count() << " ms";
+                } while (ttlDeletedDocuments - before >= limits);
             } catch (const DBException& dbex) {
                 error() << "Error processing ttl index: " << idx << " -- " << dbex.toString();
                 // Continue on to the next index.
@@ -172,7 +198,7 @@ private:
      * Remove documents from the collection using the specified TTL index after a sufficient amount
      * of time has passed according to its expiry specification.
      */
-    void doTTLForIndex(OperationContext* opCtx, BSONObj idx) {
+    void doTTLForIndex(OperationContext* opCtx, BSONObj idx, int limits) {
         const NamespaceString collectionNSS(idx["ns"].String());
         if (collectionNSS.isDropPendingNamespace()) {
             return;
@@ -274,7 +300,8 @@ private:
                                                  endKey,
                                                  BoundInclusion::kIncludeBothStartAndEndKeys,
                                                  PlanExecutor::INTERRUPT_ONLY,
-                                                 direction);
+                                                 direction,
+                                                 limits);
 
         Status result = exec->executePlan();
         if (!result.isOK()) {
