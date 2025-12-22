@@ -44,12 +44,19 @@ DATA_DIR="/home/eloq/workspace/mongo/install/data"
 
 compile_and_install
 cleanup_all "$DATA_DIR" "$BUCKET_NAME" "$BUCKET_PREFIX"
+
+launch_eloqdoc "$BUCKET_NAME" "$BUCKET_PREFIX"
+try_connect
+run_tpcc
+shutdown_eloqdoc
+
+launch_eloqdoc "$BUCKET_NAME" "$BUCKET_PREFIX"
+try_connect
+run_bench_go
+shutdown_eloqdoc
+
 launch_eloqdoc "$BUCKET_NAME" "$BUCKET_PREFIX"
 try_connect
 run_jstests
 shutdown_eloqdoc
-cleanup_all "$DATA_DIR" "$BUCKET_NAME" "$BUCKET_PREFIX"
-launch_eloqdoc "$BUCKET_NAME" "$BUCKET_PREFIX"
-try_connect
-run_tpcc
 cleanup_all "$DATA_DIR" "$BUCKET_NAME" "$BUCKET_PREFIX"

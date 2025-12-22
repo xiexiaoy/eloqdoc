@@ -279,5 +279,16 @@ run_tpcc() {
       echo "pytpcc run"
       python3 tpcc.py --config=mongodb.config --no-load --warehouses 2 --clients 10 --duration 600 mongodb &> ./tpcc-run.log
       tail -n1000 ./tpcc-run.log
+      $PREFIX/bin/eloqdoc-cli tpcc --eval "db.dropDatabase()"
+      popd
+}
+
+run_bench_go() {
+      pushd /home/$current_user/workspace/mongo/tests/gotests/bench_doc
+      echo "build bench_doc"
+      go build
+      echo "run bench_doc"
+      ./bench_doc -eloqdoc-only
+      $PREFIX/bin/eloqdoc-cli benchmark_db_11 --eval "db.dropDatabase()"
       popd
 }
