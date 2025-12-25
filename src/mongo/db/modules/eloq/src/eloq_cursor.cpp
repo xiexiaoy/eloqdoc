@@ -26,7 +26,8 @@
 #include "mongo/db/modules/eloq/data_substrate/tx_service/include/tx_record.h"
 
 namespace mongo {
-EloqCursor::EloqCursor(OperationContext* opCtx) : _opCtx(opCtx), _ru(EloqRecoveryUnit::get(opCtx)) {
+EloqCursor::EloqCursor(OperationContext* opCtx, bool registeRU)
+    : _opCtx(opCtx), _registerRU(registeRU), _ru(EloqRecoveryUnit::get(opCtx)) {
     MONGO_LOG(1) << "EloqCursor::EloqCursor";
 }
 
@@ -87,12 +88,14 @@ void EloqCursor::indexScanOpen(const txservice::TableName* tableName,
                          _txm);
     MONGO_LOG(1) << "table_name: " << _scanOpenTxReq.tab_name_->StringView()
                  << ". start_key: " << _scanOpenTxReq.start_key_->ToString()
-                 << ". start_inclusive: " << _scanOpenTxReq.start_inclusive_
-                 << ". end_key: " << _scanOpenTxReq.end_key_->ToString()
+                 << ". start_inclusive: " << _scanOpenTxReq.start_inclusive_ << ". end_key: "
+                 << (_scanOpenTxReq.end_key_ ? _scanOpenTxReq.end_key_->ToString() : "nullptr")
                  << ". end_inclusive: " << _scanOpenTxReq.end_inclusive_
                  << ". direction: " << (int)_scanOpenTxReq.direct_
                  << ". is_for_write: " << _scanOpenTxReq.is_for_write_;
-    _ru->registerCursor(this);
+    if (_registerRU) {
+        _ru->registerCursor(this);
+    }
     _txm = _ru->getTxm();
     _scanAlias = _txm->OpenTxScan(_scanOpenTxReq);
     assert(_scanAlias != UINT64_MAX);
@@ -104,7 +107,7 @@ void EloqCursor::indexScanOpen(const txservice::TableName* tableName,
 }
 
 void EloqCursor::indexScanClose() {
-    MONGO_LOG(1) << "EloqCursor::indexScanClose";
+    MONGO_LOG(1) << "EloqCursor::indexScanClose " << (void*)this;
 
     std::vector<txservice::UnlockTuple> unlockBatch;
     if (_scanBatchIdx == UINT64_MAX) {

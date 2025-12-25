@@ -292,20 +292,23 @@ bool EloqRecoveryUnit::inActiveTxn() const {
 }
 
 void EloqRecoveryUnit::registerCursor(EloqCursor* cursor) {
-    MONGO_LOG(1) << "EloqRecoveryUnit::registerCursor";
+    MONGO_LOG(1) << "EloqRecoveryUnit::registerCursor " << (void*)cursor;
     _cursors.emplace(cursor);
 }
 
 void EloqRecoveryUnit::unregisterCursor(EloqCursor* cursor) {
-    MONGO_LOG(1) << "EloqRecoveryUnit::unregisterCursor";
+    MONGO_LOG(1) << "EloqRecoveryUnit::unregisterCursor " << (void*)cursor;
     _cursors.erase(cursor);
 }
 
 void EloqRecoveryUnit::closeAllCursors() {
     MONGO_LOG(1) << "EloqRecoveryUnit::closeAllCursors";
     // scan close here
-    for (auto& cursor : _cursors) {
-        if (cursor->indexScanIsOpen()) {
+    for (EloqCursor* cursor : _cursors) {
+        bool isOpen = cursor->indexScanIsOpen();
+        MONGO_LOG(1) << "EloqRecoveryUnit::closeAllCursors " << (void*)cursor
+                     << ", indexScanIsOpen:" << isOpen;
+        if (isOpen) {
             cursor->indexScanClose();
         }
     }

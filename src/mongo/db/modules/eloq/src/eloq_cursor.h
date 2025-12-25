@@ -29,7 +29,7 @@ class EloqRecoveryUnit;
 
 class EloqCursor {
 public:
-    explicit EloqCursor(OperationContext* opCtx);
+    explicit EloqCursor(OperationContext* opCtx, bool registerRU = true);
     ~EloqCursor();
 
     bool indexScanIsOpen() const;
@@ -71,7 +71,8 @@ private:
     txservice::TxErrorCode _fetchBatchTuples();
 
     // state information used for txm
-    OperationContext* _opCtx;                        // not owned
+    OperationContext* _opCtx;  // not owned
+    bool _registerRU;
     EloqRecoveryUnit* _ru;                           // not owned
     txservice::TransactionExecution* _txm{nullptr};  // not owned
 

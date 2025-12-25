@@ -292,6 +292,9 @@ public:
     void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) const override;
 
 private:
+    class RandomCursorPOC;
+
+private:
     Status _insertRecords(OperationContext* opCtx,
                           Record* records,
                           const Timestamp* timestamps,

@@ -404,6 +404,218 @@ void EloqCatalogRecordStore::getAllCollections(std::vector<std::string>& collect
     MONGO_LOG(1) << "tables: " << output;
 }
 
+class EloqRecordStore::RandomCursorPOC final : public RecordCursor {
+public:
+    RandomCursorPOC(OperationContext* opCtx, const EloqRecordStore& rs)
+        : _opCtx(opCtx),
+          _ru{EloqRecoveryUnit::get(opCtx)},
+          _tableName(rs.tableName()),
+          _keySchema(_ru->getIndexSchema(*rs.tableName())) {
+        Eloq::MongoKey minKey, maxKey;
+        Status status = GetMinMaxKey(minKey, maxKey);
+        uassertStatusOK(status);
+        MONGO_LOG(1) << "EloqRecordStore::RandomCursorPOC minKey: " << minKey.ToString()
+                     << ", maxKey: " << minKey.ToString();
+        _minKS.resetFromBuffer(minKey.Data(), minKey.Size());
+        _maxKS.resetFromBuffer(maxKey.Data(), maxKey.Size());
+    }
+
+    ~RandomCursorPOC() override {}
+
+    boost::optional<Record> next() override {
+        MONGO_LOG(1) << "EloqRecordStore::RandomCursorPOC::next";
+        KeyString randKS(KeyString::kLatestVersion);
+        Random(randKS);
+
+        Eloq::MongoKey randKey(randKS.getBuffer(), randKS.getSize());
+        txservice::TxKey randTxKey(&randKey);
+        EloqCursor cursor(_opCtx, false);
+        cursor.indexScanOpen(_tableName,
+                             _keySchema->SchemaTs(),
+                             txservice::ScanIndexType::Primary,
+                             &randTxKey,
+                             true,
+                             nullptr,
+                             false,
+                             txservice::ScanDirection::Forward,
+                             false,
+                             false);
+        txservice::TxErrorCode err = cursor.nextBatchTuple();
+        if (err != txservice::TxErrorCode::NO_ERROR) {
+            MONGO_LOG(1) << "EloqRecordStore::RandomCursorPOC next forward scan failed, err: "
+                         << txservice::TxErrorMessage(err);
+            cursor.indexScanClose();
+            uassertStatusOK(TxErrorCodeToMongoStatus(err));
+            return {};
+        }
+        const txservice::ScanBatchTuple* tuple = cursor.currentBatchTuple();
+        if (tuple) {
+            RecordId rid(tuple->key_.GetKey<Eloq::MongoKey>()->Data(),
+                         tuple->key_.GetKey<Eloq::MongoKey>()->Size());
+            RecordData data(tuple->record_->EncodedBlobData(),
+                            static_cast<int>(tuple->record_->EncodedBlobSize()));
+            cursor.indexScanClose();
+            return Record{rid, data};
+        } else {
+            cursor.indexScanClose();
+            return {};
+        }
+    }
+
+    void save() final {
+        MONGO_LOG(1) << "EloqRecordStore::RandomCursorPOC::save";
+    }
+
+    bool restore() final {
+        MONGO_LOG(1) << "EloqRecordStore::RandomCursorPOC::restore";
+        return true;
+    }
+
+    void detachFromOperationContext() final {
+        MONGO_LOG(1) << "EloqRecordStore::RandomCursorPOC::detachFromOperationContext";
+    }
+
+    void reattachToOperationContext(OperationContext* opCtx) final {
+        MONGO_LOG(1) << "EloqRecordStore::RandomCursorPOC::reattachToOperationContext";
+    }
+
+private:
+    Status GetMinMaxKey(Eloq::MongoKey& minKey, Eloq::MongoKey& maxKey) {
+        {
+            EloqCursor cursor(_opCtx, false);
+            cursor.indexScanOpen(_tableName,
+                                 _keySchema->SchemaTs(),
+                                 txservice::ScanIndexType::Primary,
+                                 Eloq::MongoKey::NegInfTxKey(),
+                                 false,
+                                 nullptr,
+                                 false,
+                                 txservice::ScanDirection::Forward,
+                                 false,
+                                 false);
+            txservice::TxErrorCode err = cursor.nextBatchTuple();
+            if (err != txservice::TxErrorCode::NO_ERROR) {
+                MONGO_LOG(1)
+                    << "EloqRecordStore::RandomCursorPOC GetMinMaxKey forward scan failed, "
+                    << "table: " << _tableName->StringView()
+                    << ", txn: " << _ru->getTxm()->TxNumber() << txservice::TxErrorMessage(err);
+                cursor.indexScanClose();
+                return TxErrorCodeToMongoStatus(err);
+            }
+
+            const txservice::ScanBatchTuple* tuple = cursor.currentBatchTuple();
+            minKey = *tuple->key_.GetKey<Eloq::MongoKey>();
+            cursor.indexScanClose();
+        }
+
+        {
+            EloqCursor cursor(_opCtx, false);
+            cursor.indexScanOpen(_tableName,
+                                 _keySchema->SchemaTs(),
+                                 txservice::ScanIndexType::Primary,
+                                 Eloq::MongoKey::PosInfTxKey(),
+                                 false,
+                                 nullptr,
+                                 false,
+                                 txservice::ScanDirection::Backward,
+                                 false,
+                                 false);
+            txservice::TxErrorCode err = cursor.nextBatchTuple();
+            if (err != txservice::TxErrorCode::NO_ERROR) {
+                MONGO_LOG(1)
+                    << "EloqRecordStore::RandomCursorPOC GetMinMaxKey backward scan failed, "
+                    << "table: " << _tableName->StringView()
+                    << ", txn: " << _ru->getTxm()->TxNumber() << txservice::TxErrorMessage(err);
+                cursor.indexScanClose();
+                return TxErrorCodeToMongoStatus(err);
+            }
+            const txservice::ScanBatchTuple* tuple = cursor.currentBatchTuple();
+            maxKey = *tuple->key_.GetKey<Eloq::MongoKey>();
+            cursor.indexScanClose();
+        }
+
+        return Status::OK();
+    }
+
+    void Random(KeyString& ks) {
+        // 1. Get the buffer and length of min and max
+        const unsigned char* minBuf = reinterpret_cast<const unsigned char*>(_minKS.getBuffer());
+        const unsigned char* maxBuf = reinterpret_cast<const unsigned char*>(_maxKS.getBuffer());
+        size_t minLen = _minKS.getSize();
+        size_t maxLen = _maxKS.getSize();
+        size_t n = std::max(minLen, maxLen);
+
+        // 2. Extend min and max to the same length, pad high bytes of the shorter one with 0
+        std::vector<unsigned char> minV(n, 0);
+        std::vector<unsigned char> maxV(n, 0);
+        std::copy(minBuf, minBuf + minLen, minV.begin() + (n - minLen));
+        std::copy(maxBuf, maxBuf + maxLen, maxV.begin() + (n - maxLen));
+
+        // 3. Compute diff = max - min (big-endian)
+        std::vector<unsigned char> diff(n, 0);
+        int borrow = 0;
+        for (int i = n - 1; i >= 0; --i) {
+            int d = (int)maxV[i] - (int)minV[i] - borrow;
+            if (d < 0) {
+                d += 256;
+                borrow = 1;
+            } else {
+                borrow = 0;
+            }
+            diff[i] = static_cast<unsigned char>(d);
+        }
+
+        // 4. Rejection sampling: generate a uniform random number in [0, diff]
+        std::vector<unsigned char> randOff(n, 0);
+        while (true) {
+            bool allZero = true;
+            for (size_t i = 0; i < n; ++i) {
+                randOff[i] = static_cast<unsigned char>(std::rand() & 0xFF);
+                if (randOff[i] != 0)
+                    allZero = false;
+            }
+            // Check randOff <= diff (big-endian)
+            bool le = true;
+            for (size_t i = 0; i < n; ++i) {
+                if (randOff[i] < diff[i]) {
+                    le = true;
+                    break;
+                }
+                if (randOff[i] > diff[i]) {
+                    le = false;
+                    break;
+                }
+            }
+            if (le && !allZero)
+                break;  // Allow 0 offset (min) and diff (max)
+        }
+
+        // 5. result = min + randOff
+        std::vector<unsigned char> result(n, 0);
+        int carry = 0;
+        for (int i = n - 1; i >= 0; --i) {
+            int sum = (int)minV[i] + (int)randOff[i] + carry;
+            result[i] = static_cast<unsigned char>(sum & 0xFF);
+            carry = sum >> 8;
+        }
+
+        // 6. Remove redundant high 0s to get the actual length
+        size_t firstNonZero = 0;
+        while (firstNonZero < n - 1 && result[firstNonZero] == 0)
+            ++firstNonZero;
+        size_t resLen = n - firstNonZero;
+        ks.resetFromBuffer(reinterpret_cast<const char*>(result.data() + firstNonZero), resLen);
+    }
+
+private:
+    OperationContext* _opCtx{nullptr};
+    EloqRecoveryUnit* _ru{nullptr};
+    const txservice::TableName* _tableName{nullptr};
+    const txservice::KeySchema* _keySchema{nullptr};
+    KeyString _minKS{KeyString::kLatestVersion};
+    KeyString _maxKS{KeyString::kLatestVersion};
+};
+
 class EloqRecordStoreCursor : public SeekableRecordCursor {
 public:
     explicit EloqRecordStoreCursor(OperationContext* opCtx, const EloqRecordStore* rs, bool forward)
@@ -936,8 +1148,7 @@ std::unique_ptr<RecordCursor> EloqRecordStore::getCursorForRepair(OperationConte
 
 std::unique_ptr<RecordCursor> EloqRecordStore::getRandomCursor(OperationContext* opCtx) const {
     MONGO_LOG(1) << "EloqRecordStore::getRandomCursor";
-    uassertStatusOK(Status(ErrorCodes::BadValue, "Not supported feature"));
-    return {};
+    return std::make_unique<RandomCursorPOC>(opCtx, *this);
 }
 
 std::vector<std::unique_ptr<RecordCursor>> EloqRecordStore::getManyCursors(
@@ -1188,6 +1399,5 @@ Status EloqRecordStore::_insertRecords(OperationContext* opCtx,
 
     return Status::OK();
 }
-
 
 }  // namespace mongo
