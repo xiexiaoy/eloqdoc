@@ -14,6 +14,7 @@
 
     var bulk = coll.initializeUnorderedBulkOp();
     for (var i = 0; i < nDocs; i++) {
+        // bulk.insert({ _id: i, x: i });
         bulk.insert({ _id: i, x: i });
     }
     assert.writeOK(bulk.execute());
