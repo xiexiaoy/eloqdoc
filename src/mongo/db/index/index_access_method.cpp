@@ -618,6 +618,35 @@ bool IndexAccessMethod::BulkBuilder::isMultikey() const {
     return _everGeneratedMultipleKeys || isMultikeyFromPaths(_indexMultikeyPaths);
 }
 
+Status IndexAccessMethod::batchCheckDuplicateKey(OperationContext* opCtx,
+                                                  const std::vector<const BSONObj*>& bsonObjPtrs) {
+    // Delegate to the underlying SortedDataInterface
+    SortedDataInterface* sdi = getSortedDataInterface();
+    if (sdi) {
+        return sdi->batchCheckDuplicateKey(opCtx, bsonObjPtrs);
+    }
+    // If SortedDataInterface is not available, return OK
+    return Status::OK();
+}
+
+Status IndexAccessMethod::checkDuplicateKeysForUpdate(OperationContext* opCtx,
+                                                       const std::vector<BSONObj>& addedKeys,
+                                                       const RecordId& currentRecordId) {
+    // Delegate to the underlying SortedDataInterface
+    SortedDataInterface* sdi = getSortedDataInterface();
+    if (sdi) {
+        return sdi->checkDuplicateKeysForUpdate(opCtx, addedKeys, currentRecordId);
+    }
+    // If SortedDataInterface is not available, return OK
+    return Status::OK();
+}
+
+Status IndexAccessMethod::checkDuplicateKeysForUpdate(OperationContext* opCtx,
+                                                      const UpdateTicket& ticket) {
+    // Extract added keys from UpdateTicket and delegate to the main method
+    return checkDuplicateKeysForUpdate(opCtx, ticket.added, ticket.loc);
+}
+
 }  // namespace mongo
 
 #include "mongo/db/sorter/sorter.cpp"

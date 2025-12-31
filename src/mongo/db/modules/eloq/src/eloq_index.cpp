@@ -27,6 +27,7 @@
 #include "mongo/util/log.h"
 
 #include "mongo/db/modules/eloq/src/base/eloq_key.h"
+#include "mongo/db/modules/eloq/src/base/eloq_record.h"
 #include "mongo/db/modules/eloq/src/base/eloq_util.h"
 #include "mongo/db/modules/eloq/src/eloq_cursor.h"
 #include "mongo/db/modules/eloq/src/eloq_index.h"
@@ -573,6 +574,130 @@ Status EloqIndex::initAsEmpty(OperationContext* opCtx) {
     return Status::OK();
 }
 
+// Internal helper method to check duplicate keys for a vector of already-extracted keys
+// If currentRecordId is provided (not null), it will be excluded from duplicate check (for update operations)
+Status EloqIndex::_checkDuplicateKeysInternal(OperationContext* opCtx,
+                                               const std::vector<BSONObj>& keys,
+                                               const RecordId& currentRecordId) {
+    if (keys.empty()) {
+        return Status::OK();
+    }
+
+    auto ru = EloqRecoveryUnit::get(opCtx);
+    const Eloq::MongoKeySchema* keySchema = ru->getIndexSchema(_tableName, _indexName);
+    if (!keySchema) {
+        return Status::OK();  // No schema available, skip check
+    }
+
+    // Build batch for this unique index
+    // Use vectors to store KeyString buffers and MongoKey objects
+    std::vector<std::string> keyStringBuffers;  // Store KeyString buffer data
+    std::vector<std::unique_ptr<Eloq::MongoKey>> mongoKeys;  // Store MongoKey objects
+    std::vector<Eloq::MongoRecord> mongoRecords;  // Store MongoRecord objects
+    std::vector<txservice::ScanBatchTuple> indexBatchTuples;
+    
+    // Use a set to track keys within this batch to detect duplicates within the batch
+    BSONObjSet batchKeys = SimpleBSONObjComparator::kInstance.makeBSONObjSet();
+
+    // For each key to be checked
+    for (const BSONObj& key : keys) {
+        // Check if this key already exists in the batch
+        if (batchKeys.find(key) != batchKeys.end()) {
+            return {ErrorCodes::DuplicateKey, "DuplicateKey"};
+        }
+        batchKeys.insert(key.getOwned());
+        
+        // Convert BSON key to KeyString
+        KeyString keyString{KeyString::kLatestVersion, key, keySchema->Ordering()};
+        
+        // Store KeyString buffer data
+        keyStringBuffers.emplace_back(keyString.getBuffer(), keyString.getSize());
+        
+        // Create MongoKey from buffer
+        auto mongoKey = std::make_unique<Eloq::MongoKey>(
+            keyStringBuffers.back().data(), keyStringBuffers.back().size());
+        mongoKeys.push_back(std::move(mongoKey));
+        
+        // Create MongoRecord
+        mongoRecords.emplace_back();
+
+        // Add to batch
+        indexBatchTuples.emplace_back(txservice::TxKey(mongoKeys.back().get()),
+                                      &mongoRecords.back());
+    }
+
+    if (!indexBatchTuples.empty()) {
+        // Use batchGetKV to check all keys
+        uint64_t keySchemaVersion = keySchema->SchemaTs();
+        txservice::TxErrorCode err = ru->batchGetKV(
+            opCtx, _indexName, keySchemaVersion, indexBatchTuples, true);
+        if (err != txservice::TxErrorCode::NO_ERROR) {
+            return TxErrorCodeToMongoStatus(err);
+        }
+
+        // Check results for duplicates
+        for (size_t batchIdx = 0; batchIdx < indexBatchTuples.size(); batchIdx++) {
+            const txservice::ScanBatchTuple& tuple = indexBatchTuples[batchIdx];
+            if (tuple.status_ == txservice::RecordStatus::Normal) {
+                // For insert operations, any existing key is a duplicate
+                return {ErrorCodes::DuplicateKey, "DuplicateKey"};
+                
+            } else {
+                invariant(tuple.status_ == txservice::RecordStatus::Deleted);
+            }
+        }
+    }
+
+    return Status::OK();
+}
+
+Status EloqIndex::batchCheckDuplicateKey(OperationContext* opCtx,
+                                         const std::vector<const BSONObj*>& bsonObjPtrs) {
+    // Default implementation: only check for unique indexes
+    if (!unique()) {
+        return Status::OK();
+    }
+
+    if (bsonObjPtrs.empty()) {
+        return Status::OK();
+    }
+
+    auto ru = EloqRecoveryUnit::get(opCtx);
+    const Eloq::MongoKeySchema* keySchema = ru->getIndexSchema(_tableName, _indexName);
+    if (!keySchema) {
+        return Status::OK();  // No schema available, skip check
+    }
+
+    // Extract keys from documents
+    std::vector<BSONObj> allKeys;
+    for (const BSONObj* objPtr : bsonObjPtrs) {
+        const BSONObj& obj = *objPtr;
+        BSONObjSet keys = SimpleBSONObjComparator::kInstance.makeBSONObjSet();
+        MultikeyPaths multikeyPaths;
+        keySchema->GetKeys(obj, &keys, &multikeyPaths);
+        
+        // Add all keys to the vector
+        for (const BSONObj& key : keys) {
+            allKeys.push_back(key.getOwned());
+        }
+    }
+
+    // Use the internal helper method with null RecordId (for insert operations)
+    return _checkDuplicateKeysInternal(opCtx, allKeys, RecordId());
+}
+
+Status EloqIndex::checkDuplicateKeysForUpdate(OperationContext* opCtx,
+                                               const std::vector<BSONObj>& addedKeys,
+                                               const RecordId& currentRecordId) {
+    // Only check for unique indexes
+    if (!unique()) {
+        return Status::OK();
+    }
+
+    // Reuse the internal helper method with currentRecordId (for update operations)
+    return _checkDuplicateKeysInternal(opCtx, addedKeys, currentRecordId);
+}
+
 // EloqIdIndex
 std::unique_ptr<SortedDataInterface::Cursor> EloqIdIndex::newCursor(OperationContext* opCtx,
                                                                     bool isForward) const {
@@ -666,7 +791,8 @@ Status EloqUniqueIndex::insert(OperationContext* opCtx,
     auto mongoKey = std::make_unique<Eloq::MongoKey>(keyString.getBuffer(), keyString.getSize());
     auto mongoRecord = std::make_unique<Eloq::MongoRecord>();
     uint64_t keySchemaVersion = ru->getIndexSchema(_tableName, _indexName)->SchemaTs();
-
+    
+    /*
     auto [exists, err] =
         ru->getKV(opCtx, _indexName, keySchemaVersion, mongoKey.get(), mongoRecord.get(), true);
     if (err != txservice::TxErrorCode::NO_ERROR) {
@@ -676,18 +802,19 @@ Status EloqUniqueIndex::insert(OperationContext* opCtx,
     if (exists) {
         return {ErrorCodes::Error::DuplicateKey, "Duplicate Key: " + _indexName.String()};
     }
+    */
 
     mongoRecord->SetEncodedBlob(valueItem);
     if (const auto& typeBits = keyString.getTypeBits(); !typeBits.isAllZeros()) {
         mongoRecord->SetUnpackInfo(typeBits.getBuffer(), typeBits.getSize());
     }
-    err = ru->setKV(_indexName,
+    auto err = ru->setKV(_indexName,
                     keySchemaVersion,
                     std::move(mongoKey),
                     std::move(mongoRecord),
                     txservice::OperationType::Insert,
                     true);
-
+    
     return TxErrorCodeToMongoStatus(err);
 }
 

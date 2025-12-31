@@ -26,6 +26,7 @@
  *    it in the license file.
  */
 
+
 #include "mongo/base/init.h"
 #include "mongo/bson/mutable/document.h"
 #include "mongo/bson/mutable/element.h"
@@ -87,8 +88,9 @@ void serializeReply(OperationContext* opCtx,
                     size_t opsInBatch,
                     WriteResult result,
                     BSONObjBuilder* out) {
-    if (shouldSkipOutput(opCtx))
+    if (shouldSkipOutput(opCtx)) {
         return;
+    }
 
     if (continueOnError && !result.results.empty()) {
         const auto& lastResult = result.results.back();
@@ -301,6 +303,7 @@ private:
 
         void runImpl(OperationContext* opCtx, BSONObjBuilder& result) const override {
             auto reply = performInserts(opCtx, _batch);
+            
             serializeReply(opCtx,
                            ReplyStyle::kNotUpdate,
                            !_batch.getWriteCommandBase().getOrdered(),

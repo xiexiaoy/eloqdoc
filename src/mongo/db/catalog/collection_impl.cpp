@@ -513,21 +513,43 @@ Status CollectionImpl::_insertDocuments(OperationContext* opCtx,
         Timestamp timestamp = Timestamp(it->oplogSlot.opTime.getTimestamp());
         timestamps.push_back(timestamp);
     }
-    Status status =
-        _recordStore->insertRecords(opCtx, &records, &timestamps, _enforceQuota(enforceQuota));
-    if (!status.isOK())
-        return status;
 
+    // Batch check for duplicate keys before inserting
+    Status status = _recordStore->batchCheckDuplicateKey(opCtx, &records);
+    if (!status.isOK())
+    {
+        return status;
+    }
+
+    // Extract BSONObj pointers for batchCheckDuplicateKey
+    std::vector<const BSONObj*> bsonObjPtrs;
+    bsonObjPtrs.reserve(count);
+    for (auto it = begin; it != end; it++) {
+        bsonObjPtrs.push_back(&(it->doc));
+    }
+
+    // Batch check for duplicate keys in unique indexes
+    status = _indexCatalog.batchCheckDuplicateKey(opCtx, bsonObjPtrs);
+    if (!status.isOK()) {
+        return status;
+    }
+
+    // Now insert records (primary keys already checked)
+    status = _recordStore->insertRecords(opCtx, &records, &timestamps, _enforceQuota(enforceQuota));
+    if (!status.isOK()) {
+        return status;
+    }
+
+    // Prepare BsonRecords for indexRecords call (after insertRecords sets RecordIds)
     std::vector<BsonRecord> bsonRecords;
     bsonRecords.reserve(count);
     int recordIndex = 0;
     for (auto it = begin; it != end; it++) {
-        RecordId loc = records[recordIndex++].id;
-        // invariant(RecordId::min() < loc);
-        // invariant(loc < RecordId::max());
-
+        RecordId loc = records[recordIndex].id;
+        assert(!loc.isNull());
         BsonRecord bsonRecord = {loc, Timestamp(it->oplogSlot.opTime.getTimestamp()), &(it->doc)};
         bsonRecords.push_back(bsonRecord);
+        recordIndex++;
     }
 
     int64_t keysInserted;
@@ -698,6 +720,24 @@ RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
                                                 options,
                                                 updateTicket,
                                                 entry->getFilterExpression()));
+        }
+
+        // Check for duplicate keys in the added keys of each index before updating the record
+        ii = _indexCatalog.getIndexIterator(opCtx, true);
+        while (ii.more()) {
+            IndexDescriptor* descriptor = ii.next();
+            IndexCatalogEntry* entry = ii.catalogEntry(descriptor);
+            IndexAccessMethod* iam = ii.accessMethod(descriptor);
+            if (!entry->isReady(opCtx)) {
+                continue;
+            }
+
+            if (!descriptor->unique()) {
+                continue;
+            }
+
+            UpdateTicket* updateTicket = updateTickets.mutableMap()[descriptor];
+            uassertStatusOK(iam->checkDuplicateKeysForUpdate(opCtx, *updateTicket));
         }
     }
 

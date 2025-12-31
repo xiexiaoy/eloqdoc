@@ -127,6 +127,36 @@ public:
                                const RecordId& loc) = 0;
 
     /**
+     * Batch check for duplicate keys before inserting records.
+     * 
+     * @param opCtx - Operation context
+     * @param bsonObjPtrs - Vector of pointers to BSON objects to check
+     * @return Status::OK if no duplicates found, ErrorCodes::DuplicateKey if duplicate found
+     */
+    virtual Status batchCheckDuplicateKey(OperationContext* opCtx,
+                                          const std::vector<const BSONObj*>& bsonObjPtrs) {
+        // Default implementation: no-op (for storage engines that don't need batch checking)
+        return Status::OK();
+    }
+
+    /**
+     * Check for duplicate keys in update operations.
+     * This is called during update operations to validate that the new keys being added
+     * don't conflict with existing keys in the index (excluding the current document).
+     * 
+     * @param opCtx - Operation context
+     * @param addedKeys - Vector of BSONObj keys that will be added to the index
+     * @param currentRecordId - RecordId of the document being updated (to exclude from duplicate check)
+     * @return Status::OK if no duplicates found, ErrorCodes::DuplicateKey if duplicate found
+     */
+    virtual Status checkDuplicateKeysForUpdate(OperationContext* opCtx,
+                                               const std::vector<BSONObj>& addedKeys,
+                                               const RecordId& currentRecordId) {
+        // Default implementation: no-op (for storage engines that don't need this)
+        return Status::OK();
+    }
+
+    /**
      * Attempt to reduce the storage space used by this index via compaction. Only called if the
      * indexed record store supports compaction-in-place.
      */
