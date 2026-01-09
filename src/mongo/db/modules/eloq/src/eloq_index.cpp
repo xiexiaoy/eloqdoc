@@ -17,6 +17,8 @@
  */
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage  // NO LINT
 
+#include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <memory>
 #include <string_view>
@@ -24,6 +26,7 @@
 
 #include "mongo/base/object_pool.h"
 #include "mongo/db/index/index_descriptor.h"
+#include "mongo/db/query/query_knobs.h"
 #include "mongo/util/log.h"
 
 #include "mongo/db/modules/eloq/src/base/eloq_key.h"
@@ -64,14 +67,11 @@ public:
           _key{_idx->keyStringVersion()},
           _typeBits{_idx->keyStringVersion()},
           _query{_idx->keyStringVersion()} {
-        // _timer.start();
         MONGO_LOG(1) << "EloqIndexCursor::EloqIndexCursor " << _indexName->StringView();
     }
 
     ~EloqIndexCursor() override {
         MONGO_LOG(1) << "EloqIndexCursor::~EloqIndexCursor";
-        // _timer.stop();
-        // recorder::kIdReadLatency << _timer.u_elapsed();
     }
 
     void reset(const EloqIndex* idx,
@@ -105,6 +105,9 @@ public:
         _endKey = Eloq::MongoKey::GetNegInfTxKey();
 
         _recordPtr = nullptr;
+
+        // Clear prefetched records
+        _clearPrefetchedRecords();
     }
 
     void setEndPosition(const BSONObj& key, bool inclusive) override {
@@ -223,7 +226,6 @@ public:
     }
 
 private:
-    butil::Timer _timer;
     boost::optional<IndexKeyEntry> _idRead(const BSONObj& key, RequestedInfo parts) {
         MONGO_LOG(1) << "EloqIndexCursor::_idRead " << _indexName->StringView()
                      << ". key: " << key.jsonString();
@@ -291,7 +293,7 @@ private:
                                direction,
                                isForWrite,
                                _endPosition ? true : false);
-
+        _clearPrefetchedRecords();
         return true;
     }
 
@@ -311,6 +313,22 @@ private:
             if (scanTuple != nullptr) {
                 _scanTupleKey = scanTuple->key_.GetKey<Eloq::MongoKey>();
                 _scanTupleRecord = static_cast<const Eloq::MongoRecord*>(scanTuple->record_);
+
+                // Ensure records are fetched for current position (lazy fetch)
+                // Only call for STANDARD and UNIQUE indexes - ID indexes already have records in
+                // scan result _ensureRecordsFetched() uses _cursor->getScanBatchIdx() to get
+                // current position
+                if (_indexType == IndexCursorType::STANDARD ||
+                    _indexType == IndexCursorType::UNIQUE) {
+                    // For upsert operations, we dont prefetch records here to avoid
+                    // unnecessary locks
+                    if (!_opCtx->isUpsert()) {
+                        auto err = _ensureRecordsFetched();
+                        if (err != txservice::TxErrorCode::NO_ERROR) {
+                            uassertStatusOK(TxErrorCodeToMongoStatus(err));
+                        }
+                    }
+                }
             }
         }
 
@@ -327,6 +345,227 @@ private:
         }
 
         _updateIdAndTypeBits();
+
+        // Update _recordPtr after records are fetched
+        _updateRecordPtr();
+    }
+
+    txservice::TxErrorCode _ensureRecordsFetched() {
+        assert(_cursor);
+
+        const auto& batchVector = _cursor->getCurrentBatchVector();
+        assert(!batchVector.empty());
+
+        // Detect if a new batch has been fetched using batch count (more reliable than size)
+        size_t currentBatchCnt = _cursor->getScanBatchCnt();
+        if (currentBatchCnt != _lastRecordsBatchCnt) {
+            // New batch arrived, clear old prefetched records
+            _prefetchedRecords.clear();
+            _prefetchedBatchStartIdx = 0;
+            _lastRecordsBatchCnt = currentBatchCnt;
+        }
+
+        // Current index of the tuple in the index scan batch
+        size_t currentIndexScanBatchIdx = _cursor->getCurrentBatchTupleIdx();
+
+        // Check if current scan index is within prefetched range
+        size_t prefetchedEndIdx = _prefetchedBatchStartIdx + _prefetchedRecords.size();
+        if (currentIndexScanBatchIdx >= _prefetchedBatchStartIdx &&
+            currentIndexScanBatchIdx < prefetchedEndIdx) {
+            // Records already fetched for current position
+            return txservice::TxErrorCode::NO_ERROR;
+        }
+
+        // Get batch size from configuration
+        size_t batchSize = _getBatchFetchSize();
+        // Need to fetch records starting from current scan index
+        return _fetchRecordsForRange(currentIndexScanBatchIdx, batchSize, batchVector);
+    }
+
+    txservice::TxErrorCode _fetchRecordsForRange(
+        size_t startIdx,
+        size_t batchSize,
+        const std::vector<txservice::ScanBatchTuple>& batchVector) {
+        assert(startIdx < batchVector.size());
+
+        // endIdx smaller than full scan batch)
+        size_t endIdx = std::min(startIdx + batchSize, batchVector.size());
+
+        // Extract RecordIds from _scanBatchVector (via getCurrentBatchVector) BEFORE batchGetKV
+        // The RecordId should be extracted from _scanBatchVector before calling batchGetKV
+        // This ensures we have the RecordIds ready before making the batchGetKV call
+        // Note: _idx is a member variable of EloqIndexCursor (const EloqIndex* _idx, line 421)
+        // Some entries in index scan results may be Deleted, which should be skipped
+        // We maintain a mapping from recordIds index to batchVector index for efficient lookup
+        std::vector<RecordId> recordIds;
+        std::vector<size_t> recordIdsIdxToBatchIdx;  // Maps recordIds index to batchVector index
+        recordIds.reserve(endIdx - startIdx);
+        recordIdsIdxToBatchIdx.reserve(endIdx - startIdx);
+
+        for (size_t i = startIdx; i < endIdx; ++i) {
+            const auto& tuple = batchVector[i];
+            // Skip Deleted records - they create holes in prefetchRecords (nullptr entries)
+            if (tuple.status_ == txservice::RecordStatus::Deleted) {
+                continue;
+            }
+
+            // Only extract RecordId for Normal status tuples
+            invariant(tuple.status_ == txservice::RecordStatus::Normal);
+            RecordId id;
+            if (_indexType == IndexCursorType::UNIQUE) {
+                // For UNIQUE indexes, RecordId is stored in the record data, not in the key
+                const Eloq::MongoRecord* record =
+                    static_cast<const Eloq::MongoRecord*>(tuple.record_);
+                invariant(record != nullptr);
+                id = record->ToRecordId(false);
+            } else {
+                // For STANDARD indexes, RecordId is appended to the key
+                const Eloq::MongoKey* key = tuple.key_.GetKey<Eloq::MongoKey>();
+                invariant(key != nullptr);
+                KeyString ks(_idx->keyStringVersion());
+                ks.resetFromBuffer(key->Data(), key->Size());
+                id = KeyString::decodeRecordIdStrAtEnd(ks.getBuffer(), ks.getSize());
+            }
+
+            recordIdsIdxToBatchIdx.push_back(
+                i);  // Store batchVector index for this recordIds entry
+            recordIds.push_back(id);
+        }
+
+        // It's possible all records in the range are deleted, so we allow empty recordIds
+
+        // Update logging with actual RecordIds count
+        MONGO_LOG(1) << "Starting batch fetch for range [" << startIdx << "-" << endIdx << "), "
+                     << recordIds.size() << " RecordIds (out of " << (endIdx - startIdx)
+                     << " total entries), batch size: " << batchSize
+                     << ", index: " << _indexName->StringView();
+
+        // Prepare _prefetchedRecords before batchGetKV so we can use them directly
+        // Clear previous records and prepare for new ones
+        _prefetchedRecords.clear();
+        _prefetchedBatchStartIdx = startIdx;
+        // Note: _lastRecordsBatchCnt is already updated in _ensureRecordsFetched() before calling
+        // this method
+
+        // Reserve capacity and initialize with nullptr (for deleted records)
+        // Only create records for Normal status tuples
+        size_t neededSize = endIdx - startIdx;
+        _prefetchedRecords.reserve(neededSize);
+        _prefetchedRecords.resize(neededSize);  // Default-constructs unique_ptrs (nullptr)
+
+        // If all records are deleted, skip batchGetKV
+        if (recordIds.empty()) {
+            MONGO_LOG(1) << "All records in range [" << startIdx << "-" << endIdx
+                         << ") are deleted, skipping batch fetch";
+            return txservice::TxErrorCode::NO_ERROR;
+        }
+
+        // Create records directly in _prefetchedRecords at the correct positions
+        // and build fetchTuples using those same records
+        std::vector<txservice::ScanBatchTuple> fetchTuples;
+        fetchTuples.reserve(recordIds.size());
+        auto docKeys = std::make_unique<Eloq::MongoKey[]>(recordIds.size());
+
+        for (size_t recordIdsIdx = 0; recordIdsIdx < recordIds.size(); ++recordIdsIdx) {
+            // Get the batchVector index and calculate the prefetch offset
+            size_t batchVectorIdx = recordIdsIdxToBatchIdx[recordIdsIdx];
+            size_t prefetchOffset = batchVectorIdx - startIdx;
+
+            // Create the record directly in _prefetchedRecords at the correct position
+            _prefetchedRecords[prefetchOffset] = std::make_unique<Eloq::MongoRecord>();
+
+            // Build the fetch tuple using the record we just created
+            Eloq::MongoKey& docKey = docKeys[recordIdsIdx];
+            docKey.SetPackedKey(recordIds[recordIdsIdx]);
+            fetchTuples.emplace_back(txservice::TxKey(&docKey),
+                                     _prefetchedRecords[prefetchOffset].get());
+        }
+
+        // Execute batch fetch
+        const txservice::TableName& tableName = _idx->getTableName();
+        uint64_t schemaVersion = _ru->getIndexSchema(tableName)->SchemaTs();
+        bool isForWrite = _opCtx->isUpsert();
+        invariant(!isForWrite);
+
+        txservice::TxErrorCode err =
+            _ru->batchGetKV(_opCtx, tableName, schemaVersion, fetchTuples, isForWrite);
+
+        if (err != txservice::TxErrorCode::NO_ERROR) {
+            MONGO_LOG(0) << "Batch fetch failed for table " << tableName.StringView() << ", range ["
+                         << startIdx << "-" << endIdx << "), error: " << err;
+            // Clear prefetched records on error and return error
+            _prefetchedRecords.clear();
+            _prefetchedBatchStartIdx = 0;
+            return err;
+        }
+
+#ifndef NDEBUG
+        // Verify records after batchGetKV (debug build only)
+        // When record cannot be found with batchGetKV, error should be returned
+        // All fetched records should be Normal and non-null since they appear in index scan results
+        for (size_t recordIdsIdx = 0; recordIdsIdx < fetchTuples.size(); ++recordIdsIdx) {
+            const auto& tuple = fetchTuples[recordIdsIdx];
+
+            // Verify record is valid - fail if not
+            assert(tuple.status_ == txservice::RecordStatus::Normal && tuple.record_ != nullptr);
+        }
+#endif
+
+        assert(_prefetchedBatchStartIdx + _prefetchedRecords.size() <= endIdx);
+
+        MONGO_LOG(1) << "Fetched " << fetchTuples.size() << " records in range [" << startIdx << "-"
+                     << endIdx << ") (with " << (neededSize - fetchTuples.size())
+                     << " deleted entries)";
+        return txservice::TxErrorCode::NO_ERROR;
+    }
+
+    void _updateRecordPtr() {
+        MONGO_LOG(1) << "EloqIndexCursor::_updateRecordPtr " << _indexName->StringView();
+
+        switch (_indexType) {
+            case IndexCursorType::ID: {
+                _recordPtr = _scanTupleRecord;
+            } break;
+            case IndexCursorType::UNIQUE:
+            case IndexCursorType::STANDARD: {
+                // We dont have prefetch records for upsert operations
+                if (!_opCtx->isUpsert()) {
+                    // Look up prefetched record by index
+                    // Get current scan batch index directly from EloqCursor (no need to search)
+                    // The corresponding index of record vector is scanBatchIdx -
+                    // _prefetchedBatchStartIdx
+                    size_t currentIndexScanBatchIdx = _cursor->getCurrentBatchTupleIdx();
+
+                    if (currentIndexScanBatchIdx >= _prefetchedBatchStartIdx) {
+                        size_t offset = currentIndexScanBatchIdx - _prefetchedBatchStartIdx;
+                        if (offset < _prefetchedRecords.size() &&
+                            _prefetchedRecords[offset] != nullptr) {
+                            _recordPtr = _prefetchedRecords[offset].get();  // Use prefetched record
+                            MONGO_LOG(1) << "found. id: " << _id.toString() << ". record:"
+                                         << BSONObj{_recordPtr->EncodedBlobData()}.jsonString();
+                        } else {
+                            _recordPtr =
+                                nullptr;  // Record not fetched (error case or out of range)
+                            MONGO_LOG(0) << "RecordId not found in prefetched records at offset "
+                                         << offset << " (scan index " << currentIndexScanBatchIdx
+                                         << ") for index " << _indexName->StringView();
+                            MONGO_UNREACHABLE;
+                        }
+                    } else {
+                        _recordPtr = nullptr;  // Current index before prefetched range
+                        MONGO_LOG(0) << "Current scan index " << currentIndexScanBatchIdx
+                                     << " is before prefetched range starting at "
+                                     << _prefetchedBatchStartIdx;
+                        MONGO_UNREACHABLE;
+                    }
+                } else {
+                    // For upsert operations, we dont prefetch records
+                    _recordPtr = nullptr;
+                }
+            } break;
+            default:
+                MONGO_UNREACHABLE;
+        }
     }
 
     void _updateIdAndTypeBits() {
@@ -338,21 +577,18 @@ private:
                 BufReader br{_scanTupleRecord->UnpackInfoData(),
                              static_cast<unsigned int>(_scanTupleRecord->UnpackInfoSize())};
                 _typeBits.resetFromBuffer(&br);
-                _recordPtr = _scanTupleRecord;
             } break;
             case IndexCursorType::UNIQUE: {
                 _id = _scanTupleRecord->ToRecordId(false);
                 BufReader br{_scanTupleRecord->UnpackInfoData(),
                              static_cast<unsigned int>(_scanTupleRecord->UnpackInfoSize())};
                 _typeBits.resetFromBuffer(&br);
-                _recordPtr = nullptr;
             } break;
             case IndexCursorType::STANDARD: {
                 _id = KeyString::decodeRecordIdStrAtEnd(_key.getBuffer(), _key.getSize());
                 BufReader br{_scanTupleRecord->UnpackInfoData(),
                              static_cast<unsigned int>(_scanTupleRecord->UnpackInfoSize())};
                 _typeBits.resetFromBuffer(&br);
-                _recordPtr = nullptr;
                 break;
             }
             default:
@@ -413,6 +649,18 @@ private:
         }
     }
 
+    void _clearPrefetchedRecords() {
+        _prefetchedRecords.clear();
+        _prefetchedBatchStartIdx = 0;
+        _lastRecordsBatchCnt = 0;
+    }
+
+    size_t _getBatchFetchSize() const {
+        int batchSize = internalEloqIndexBatchFetchSize.load();
+        // Ensure reasonable bounds: 1 to 1000
+        return std::max(1, std::min(batchSize, 1000));
+    }
+
 private:
     OperationContext* _opCtx;                  // not owned
     EloqRecoveryUnit* _ru;                     // not owned
@@ -444,6 +692,12 @@ private:
     Eloq::MongoRecord _idReadRecord;
 
     boost::optional<EloqCursor> _cursor;
+
+    // Storage for prefetched records
+    std::vector<std::unique_ptr<Eloq::MongoRecord>> _prefetchedRecords;
+    size_t _prefetchedBatchStartIdx{
+        0};                          // Starting index in scan batch for current prefetched records
+    size_t _lastRecordsBatchCnt{0};  // Track batch count to detect new batches
 };
 
 class EloqIndex::BulkBuilder : public SortedDataBuilderInterface {

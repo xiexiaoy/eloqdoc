@@ -17,6 +17,8 @@
  */
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
+#include <atomic>
+
 #include "mongo/util/log.h"
 
 #include "mongo/db/modules/eloq/src/eloq_cursor.h"
@@ -24,6 +26,8 @@
 
 #include "mongo/db/modules/eloq/data_substrate/tx_service/include/tx_execution.h"
 #include "mongo/db/modules/eloq/data_substrate/tx_service/include/tx_record.h"
+
+#include <butil/time.h>
 
 namespace mongo {
 EloqCursor::EloqCursor(OperationContext* opCtx) : _opCtx(opCtx), _ru(EloqRecoveryUnit::get(opCtx)) {
@@ -188,8 +192,10 @@ txservice::TxErrorCode EloqCursor::_fetchBatchTuples() {
                                                  coro.resumeFuncPtr,
                                                  _txm);
     scanBatchTxReq.prefetch_slice_cnt_ = PrefetchSize();
+
     _txm->Execute(&scanBatchTxReq);
     scanBatchTxReq.Wait();
+
     if (scanBatchTxReq.IsError()) {
         MONGO_LOG(1) << "EloqCursor::_fetchBatchTuples ScanBatchTxRequest fail"
                      << ". table_name: " << _scanOpenTxReq.tab_name_->StringView()

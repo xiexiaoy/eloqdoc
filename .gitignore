@@ -186,3 +186,6 @@ install
 data
 pyvenv
 venv
+/.cursor
+/thoughts
+/db

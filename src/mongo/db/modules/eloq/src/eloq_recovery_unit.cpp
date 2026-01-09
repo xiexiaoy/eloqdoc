@@ -18,9 +18,11 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <exception>
+#include <numeric>
 #include <thread>
 #include <utility>
 
@@ -452,12 +454,37 @@ txservice::TxErrorCode EloqRecoveryUnit::batchGetKV(OperationContext* opCtx,
                  << ", batch size: " << batch.size();
     const CoroutineFunctors& coro = Client::getCurrent()->coroutineFunctors();
 
+    // BatchReadTxRequest requires batch to be sorted by key in ascending order.
+    // We need to sort the batch but preserve the original order for results.
+    std::vector<size_t> originalIndices(batch.size());
+    std::iota(originalIndices.begin(), originalIndices.end(), 0);
+
+    // Sort indices based on key values
+    std::sort(originalIndices.begin(), originalIndices.end(), [&batch](size_t i, size_t j) {
+        return batch[i].key_ < batch[j].key_;
+    });
+
+    // Rearrange batch using sorted indices with std::move for efficiency
+    std::vector<txservice::ScanBatchTuple> sortedBatch;
+    sortedBatch.reserve(batch.size());
+    for (size_t idx : originalIndices) {
+        sortedBatch.emplace_back(std::move(batch[idx]));
+    }
+
+    // Create reverse mapping from original position to sorted position
+    // originalIndices[i] = original index of element at sorted position i
+    // originalToSorted[j] = sorted position of element originally at position j
+    std::vector<size_t> originalToSorted(batch.size());
+    for (size_t i = 0; i < originalIndices.size(); ++i) {
+        originalToSorted[originalIndices[i]] = i;
+    }
+
     bool isForShare = false;
     bool readLocal = false;
     bool point_read_on_miss = true;
     txservice::BatchReadTxRequest batchReadTxReq(&tableName,
                                                  keySchemaVersion,
-                                                 batch,
+                                                 sortedBatch,
                                                  isForWrite,
                                                  isForShare,
                                                  readLocal,
@@ -467,7 +494,17 @@ txservice::TxErrorCode EloqRecoveryUnit::batchGetKV(OperationContext* opCtx,
                                                  point_read_on_miss);
     _txm->Execute(&batchReadTxReq);
     batchReadTxReq.Wait();
+
     txservice::TxErrorCode err = batchReadTxReq.ErrorCode();
+
+    // Restore original order in the batch parameter by moving elements back
+    batch.clear();
+    batch.reserve(sortedBatch.size());
+    for (size_t originalIdx = 0; originalIdx < originalToSorted.size(); ++originalIdx) {
+        size_t sortedIdx = originalToSorted[originalIdx];
+        batch.emplace_back(std::move(sortedBatch[sortedIdx]));
+    }
+
     if (err == txservice::TxErrorCode::NO_ERROR) {
         MONGO_LOG(1) << "EloqRecoveryUnit::batchGetKV tableName: " << tableName.StringView()
                      << " NO_ERROR";
