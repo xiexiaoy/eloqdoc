@@ -10,49 +10,6 @@ pip3 install minio
 # Setup Minio mc Client command
 mc alias set minio_server ${ELOQ_AWS_S3_ENDPOINT_URL} ${ELOQ_AWS_ACCESS_KEY_ID} ${ELOQ_AWS_SECRET_KEY}
 
-# Helper function to update config template file with required settings
-update_config_template() {
-    local config_file="$1"
-    if [ ! -f "$config_file" ]; then
-        echo "Warning: Config file $config_file does not exist"
-        return 1
-    fi
-
-    # ak/sk
-    sed -i "s/aws_access_key_id.*=.\+/aws_access_key_id=${ELOQ_AWS_ACCESS_KEY_ID}/g" "$config_file"
-    sed -i "s/aws_secret_key.*=.\+/aws_secret_key=${ELOQ_AWS_SECRET_KEY}/g" "$config_file"
-    # OSS settings
-    sed -i "s|rocksdb_cloud_s3_endpoint_url.*=.\+|rocksdb_cloud_s3_endpoint_url=${ELOQ_AWS_S3_ENDPOINT_URL}|g" "$config_file"
-    sed -i "s|txlog_rocksdb_cloud_s3_endpoint_url.*=.\+|txlog_rocksdb_cloud_s3_endpoint_url=${ELOQ_AWS_S3_ENDPOINT_URL}|g" "$config_file"
-    sed -i "s/rocksdb_cloud_bucket_name.*=.\+/rocksdb_cloud_bucket_name=${BUCKET_NAME}/g" "$config_file"
-    sed -i "s/txlog_rocksdb_cloud_bucket_name.*=.\+/txlog_rocksdb_cloud_bucket_name=${BUCKET_NAME}/g" "$config_file"
-    sed -i "s/rocksdb_cloud_region.*=.\+/rocksdb_cloud_region=${ELOQ_AWS_REGION}/g" "$config_file"
-    sed -i "s/txlog_rocksdb_cloud_region.*=.\+/txlog_rocksdb_cloud_region=${ELOQ_AWS_REGION}/g" "$config_file"
-    sed -i "s/rocksdb_cloud_bucket_prefix.*=.\+/rocksdb_cloud_bucket_prefix=${BUCKET_PREFIX}/g" "$config_file"
-    sed -i "s/txlog_rocksdb_cloud_bucket_prefix.*=.\+/txlog_rocksdb_cloud_bucket_prefix=${BUCKET_PREFIX}/g" "$config_file"
-    sed -i "s|eloq_dss_config_file_path.*=.\+|eloq_dss_config_file_path=${WORKSPACE}/eloqsql_src/concourse/scripts/dss_config.example.ini|g" "$config_file"
-}
-
-if [[ -d "$WORKSPACE/eloqdoc_src/concourse" ]]; then
-    pushd "$WORKSPACE/eloqdoc_src/concourse"
-elif [[ -d "$WORKSPACE/eloqdoc_pr/concourse" ]]; then
-    pushd "$WORKSPACE/eloqdoc_pr/concourse"
-else
-    echo "No concourse directory found under \$WORKSPACE" >&2
-    exit 1
-fi
-
-update_config_template ./scripts/data_substrate.cnf
-
-update_config_template ./artifact/ELOQDSS_ROCKSDB/data_substrate.cnf
-
-# Update all data_substrate*.cnf files in ELOQDSS_ROCKSDB_CLOUD_S3
-update_config_template ./artifact/ELOQDSS_ROCKSDB_CLOUD_S3/data_substrate.cnf
-update_config_template ./artifact/ELOQDSS_ROCKSDB_CLOUD_S3/data_substrate_cluster_a.cnf
-update_config_template ./artifact/ELOQDSS_ROCKSDB_CLOUD_S3/data_substrate_cluster_b.cnf
-update_config_template ./artifact/ELOQDSS_ROCKSDB_CLOUD_S3/data_substrate_cluster_c.cnf
-popd
-
 # Make coredump dir writable.
 if [ ! -d "/var/crash" ]; then sudo mkdir -p /var/crash; fi
 sudo chmod 777 /var/crash
@@ -156,7 +113,7 @@ compile_and_install_ent() {
             -DSTATISTICS=ON \
             -DUSE_ASAN=OFF \
             -DWITH_LOG_STATE=ROCKSDB_CLOUD_S3 \
-            -DWITH_DATA_STORE=ELOQDSS_ROCKSDB_CLOUD_S3 \
+            -DWITH_DATA_STORE=ELOQDSS_ELOQSTORE \
             -DFORK_HM_PROCESS=ON \
             -DOPEN_LOG_SERVICE=OFF
 
@@ -168,7 +125,7 @@ compile_and_install_ent() {
       # Detect CPU cores for optimal parallel builds
       # CPU_CORE_SIZE=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 4)
       CPU_CORE_SIZE=4
-      env OPEN_LOG_SERVICE=0 WITH_DATA_STORE=ELOQDSS_ROCKSDB_CLOUD_S3 WITH_LOG_STATE=ROCKSDB_CLOUD_S3 FORK_HM_PROCESS=1 \
+      env OPEN_LOG_SERVICE=0 WITH_DATA_STORE=ELOQDSS_ELOQSTORE WITH_LOG_STATE=ROCKSDB_CLOUD_S3 FORK_HM_PROCESS=1 \
       python2 scripts/buildscripts/scons.py MONGO_VERSION=4.0.3 \
             VARIANT_DIR=Debug \
             CXXFLAGS="-Wno-nonnull -Wno-class-memaccess -Wno-interference-size -Wno-redundant-move" \
@@ -197,15 +154,14 @@ launch_eloqdoc() {
       mkdir -p "$PREFIX/log" "$PREFIX/data"
       nohup $PREFIX/bin/eloqdoc \
             --config=./concourse/scripts/eloqdoc.yaml \
-	      --data_substrate_config=./concourse/scripts/data_substrate.cnf \
-            --rocksdb_cloud_bucket_name="$bucket_name" \
-            --rocksdb_cloud_bucket_prefix="$bucket_prefix" \
-	      --rocksdb_cloud_object_path="dss" \
-	      --rocksdb_cloud_s3_endpoint_url=${ELOQ_AWS_S3_ENDPOINT_URL} \
-            --txlog_rocksdb_cloud_bucket_name="$bucket_name" \
-            --txlog_rocksdb_cloud_bucket_prefix="$bucket_prefix" \
-	      --txlog_rocksdb_cloud_object_path="txlog" \
-	      --txlog_rocksdb_cloud_s3_endpoint_url=${ELOQ_AWS_S3_ENDPOINT_URL} \
+	          --data_substrate_config=./concourse/scripts/data_substrate.cnf \
+            --eloq_store_cloud_endpoint=${ELOQ_AWS_S3_ENDPOINT_URL} \
+            --eloq_store_cloud_store_path="${bucket_prefix}${bucket_name}/eloqstore" \
+            --eloq_store_cloud_access_key=${ELOQ_AWS_ACCESS_KEY_ID} \
+            --eloq_store_cloud_secret_key=${ELOQ_AWS_SECRET_KEY} \
+            --txlog_rocksdb_cloud_object_store_service_url="${ELOQ_AWS_S3_ENDPOINT_URL}/${bucket_prefix}${bucket_name}/txlog" \
+            --aws_access_key_id=${ELOQ_AWS_ACCESS_KEY_ID} \
+            --aws_secret_key=${ELOQ_AWS_SECRET_KEY} \
             &>$PREFIX/log/eloqdoc.out &
 }
 
@@ -222,14 +178,13 @@ launch_eloqdoc_fast() {
       nohup $PREFIX/bin/eloqdoc \
             --config=./concourse/scripts/eloqdoc.yaml \
             --data_substrate_config=./concourse/scripts/data_substrate.cnf \
-            --rocksdb_cloud_bucket_name="$bucket_name" \
-            --rocksdb_cloud_bucket_prefix="$bucket_prefix" \
-            --rocksdb_cloud_object_path="dss" \
-            --rocksdb_cloud_s3_endpoint_url=${ELOQ_AWS_S3_ENDPOINT_URL} \
-            --txlog_rocksdb_cloud_bucket_name="$bucket_name" \
-            --txlog_rocksdb_cloud_bucket_prefix="$bucket_prefix" \
-            --txlog_rocksdb_cloud_object_path="txlog" \
-            --txlog_rocksdb_cloud_s3_endpoint_url=${ELOQ_AWS_S3_ENDPOINT_URL} \
+            --eloq_store_cloud_endpoint=${ELOQ_AWS_S3_ENDPOINT_URL} \
+            --eloq_store_cloud_store_path="${bucket_prefix}${bucket_name}/eloqstore" \
+            --eloq_store_cloud_access_key=${ELOQ_AWS_ACCESS_KEY_ID} \
+            --eloq_store_cloud_secret_key=${ELOQ_AWS_SECRET_KEY} \
+            --txlog_rocksdb_cloud_object_store_service_url="${ELOQ_AWS_S3_ENDPOINT_URL}/${bucket_prefix}${bucket_name}/txlog" \
+            --aws_access_key_id=${ELOQ_AWS_ACCESS_KEY_ID} \
+            --aws_secret_key=${ELOQ_AWS_SECRET_KEY} \
             --enable_wal=false \
             &>$PREFIX/log/eloqdoc.out &
 }
