@@ -6,8 +6,8 @@ sudo chown -R $USER $PWD
 cd $HOME
 ln -s ${WORKSPACE}/eloqdoc_src eloqdoc
 cd eloqdoc
-ln -s $WORKSPACE/eloq_logservice_src src/mongo/db/modules/eloq/eloq_log_service
-pushd src/mongo/db/modules/eloq/tx_service
+ln -s $WORKSPACE/eloq_logservice_src src/mongo/db/modules/eloq/data_substrate/eloq_log_service
+pushd src/mongo/db/modules/eloq/data_substrate/tx_service
 ln -s $WORKSPACE/raft_host_manager_src raft_host_manager
 popd
 
